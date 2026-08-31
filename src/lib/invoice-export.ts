@@ -76,26 +76,28 @@ export function exportExcel(inv: Invoice) {
   const aoa: (string | number | null)[][] = [];
   const push = (...cells: (string | number | null)[]) => aoa.push(cells);
 
-  push("Tax Invoice", null, null, null, null, null);
-  push(" Mr. Executive Engineer", null, null, null, " RE Bill No :", inv.reBillNo);
+  push("TAX INVOICE", null, null, null, null, null);
+  push("To, Executive Engineer", null, null, null, `RE Bill No : ${inv.reBillNo}`, null);
+  push(`Section :- ${inv.section}`, null, null, null, `RA Bill Date : ${inv.raBillDate}`, null);
+  push(`Sub Division :- ${inv.subDivision}`, null, null, null, `Work Order No : ${inv.workOrderNo}`, null);
   push(
-    `Section :-  ${inv.section}        Sub division:- ${inv.subDivision}`,
+    `M.S.E.D.C.L O & M Division :- ${inv.division}`,
     null,
     null,
     null,
-    "Ra Bill Date: ",
-    inv.raBillDate,
+    `W.O. Date : ${inv.workOrderDate}`,
+    null,
   );
-  push(`M.S.E.D.C.L O & M Division:- ${inv.division}`, null, null, null, "W.O. Date: ", inv.workOrderDate);
   push(
-    `  Work Order: EE/ ${inv.division} /LOE :-${inv.loeNo}   Dt.${inv.loeDate}`,
+    `Work Order: EE/${inv.division}/LOE :- ${inv.loeNo}   Dt. ${inv.loeDate}`,
     null,
     null,
     null,
-    "Work order ",
-    inv.workOrderNo,
+    `GSTIN : ${FIRM.gstin}`,
+    null,
   );
-  push("Sr.No", "                                      Description", "Unit", "Qty", "Rate", "Amount");
+  push(null);
+  push("Sr.No", "Description", "Unit", "Qty", "Rate", "Amount (Rs.)");
 
   const headerRows = aoa.length;
   for (const r of bodyRows(inv)) {
@@ -105,23 +107,27 @@ export function exportExcel(inv: Invoice) {
   }
 
   push("TOTAL (Excl. Taxes)", null, null, null, null, t.totalExclusive);
-  push("G.S.T 18%", null, null, null, null, t.gst);
-  push("G. TOTAL (Incl. Taxes)", null, null, null, null, t.totalInclusive);
+  push("G.S.T. 18%", null, null, null, null, t.gst);
+  push("GRAND TOTAL (Incl. Taxes)", null, null, null, null, t.totalInclusive);
   push(`Amount in words: ${inv.amountInWords}`, null, null, null, null, null);
-  push(`GST No: ${FIRM.gstin}`, null, null, null, null, null);
-  push(`PAN No: ${FIRM.pan}`, null, null, null, null, null);
+  push(`GST No: ${FIRM.gstin}      PAN No: ${FIRM.pan}`, null, null, null, null, null);
   push(null);
-  push(" CERTIFICATE", null, null, null, null, null);
+  push("CERTIFICATE", null, null, null, null, null);
   CERTIFICATE_LINES.forEach((line, i) => push(`${i + 1})`, line, null, null, null, null));
+  push(null);
+  push(null, null, null, null, `For ${FIRM.name}`, null);
+  push(null);
+  push(null, null, null, null, "Authorised Signatory", null);
 
   const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws["!cols"] = [{ wch: 8 }, { wch: 62 }, { wch: 8 }, { wch: 8 }, { wch: 12 }, { wch: 14 }];
+  ws["!cols"] = [{ wch: 8 }, { wch: 55 }, { wch: 8 }, { wch: 8 }, { wch: 18 }, { wch: 16 }];
   const merges: XLSX.Range[] = [
     { s: { r: 0, c: 0 }, e: { r: 0, c: 5 } },
     { s: { r: 1, c: 0 }, e: { r: 1, c: 3 } },
     { s: { r: 2, c: 0 }, e: { r: 2, c: 3 } },
     { s: { r: 3, c: 0 }, e: { r: 3, c: 3 } },
     { s: { r: 4, c: 0 }, e: { r: 4, c: 3 } },
+    { s: { r: 5, c: 0 }, e: { r: 5, c: 3 } },
   ];
   bodyRows(inv).forEach((r, i) => {
     if (isSectionRow(r)) {
@@ -132,13 +138,16 @@ export function exportExcel(inv: Invoice) {
   const totalsStart = headerRows + bodyRows(inv).length;
   for (let i = 0; i < 3; i++)
     merges.push({ s: { r: totalsStart + i, c: 0 }, e: { r: totalsStart + i, c: 4 } });
-  for (let i = 3; i < 6; i++)
+  for (let i = 3; i < 5; i++)
     merges.push({ s: { r: totalsStart + i, c: 0 }, e: { r: totalsStart + i, c: 5 } });
-  const certStart = totalsStart + 7;
+  const certStart = totalsStart + 6;
   merges.push({ s: { r: certStart, c: 0 }, e: { r: certStart, c: 5 } });
   CERTIFICATE_LINES.forEach((_, i) =>
     merges.push({ s: { r: certStart + 1 + i, c: 1 }, e: { r: certStart + 1 + i, c: 5 } }),
   );
+  const sigForRow = certStart + CERTIFICATE_LINES.length + 2;
+  merges.push({ s: { r: sigForRow, c: 4 }, e: { r: sigForRow, c: 5 } });
+  merges.push({ s: { r: sigForRow + 2, c: 4 }, e: { r: sigForRow + 2, c: 5 } });
   ws["!merges"] = merges;
 
   const wb = XLSX.utils.book_new();
@@ -173,7 +182,7 @@ export function exportPdf(inv: Invoice) {
   // ---- Info box ------------------------------------------------------
   const boxTop = y;
   const left = [
-    "To, Mr. Executive Engineer",
+    "To, Executive Engineer",
     `Section :- ${inv.section}`,
     `Sub Division :- ${inv.subDivision}`,
     `M.S.E.D.C.L O & M Division :- ${inv.division}`,
@@ -293,22 +302,21 @@ export function exportPdf(inv: Invoice) {
 
   wrap(`Amount in words: ${inv.amountInWords}`, 9, 0, true);
   wrap(`GST No: ${FIRM.gstin}      PAN No: ${FIRM.pan}`, 9);
-  y += 8;
+  y += 6;
 
-  ensureSpace(20);
+  ensureSpace(16);
   doc.setDrawColor(...LINE).setLineWidth(0.6);
   doc.line(M, y, W - M, y);
-  y += 14;
+  y += 12;
   wrap("CERTIFICATE", 10, 0, true);
-  y += 2;
   CERTIFICATE_LINES.forEach((line, i) => wrap(`${i + 1})  ${line}`, 8.5, 8));
 
-  // ---- Signature block --------------------------------------------------
-  ensureSpace(60);
-  y += 22;
+  // ---- Signature block (kept together, never orphaned alone) -----------
+  ensureSpace(50);
+  y += 14;
   doc.setFont("helvetica", "bold").setFontSize(9.5).setTextColor(0, 0, 0);
   doc.text(`For ${FIRM.name}`, W - M, y, { align: "right" });
-  y += 36;
+  y += 26;
   doc.setFont("helvetica", "normal").setFontSize(8.5);
   doc.text("Authorised Signatory", W - M, y, { align: "right" });
 
