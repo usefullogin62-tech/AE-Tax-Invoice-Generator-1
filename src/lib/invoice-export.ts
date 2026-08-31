@@ -1,4 +1,4 @@
-import * as XLSX from "xlsx";
+import * as ExcelJS from "exceljs";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
@@ -69,90 +69,289 @@ function bodyRows(inv: Invoice): Row[] {
 
 const isSectionRow = (r: Row) => r.desc === "" && typeof r.sr === "string";
 
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 /* ------------------------------- Excel -------------------------------- */
+/* Enterprise-formatted workbook built with ExcelJS (fonts, fills, borders,
+ * number formats, freeze panes) with print margins reserved top & bottom
+ * so the sheet prints cleanly onto pre-printed letterhead stationery. */
 
-export function exportExcel(inv: Invoice) {
+const ACCENT_HEX = "0F4C81";
+const BAND_HEX = "F1F5F9";
+const ZEBRA_HEX = "F8FAFC";
+const LINE_HEX = "94A3B8";
+const INK_HEX = "111827";
+
+const thin = { style: "thin" as const, color: { argb: `FF${LINE_HEX}` } };
+const boxBorder = { top: thin, left: thin, bottom: thin, right: thin };
+
+type Cell = ExcelJS.Cell;
+
+function styleRange(
+  ws: ExcelJS.Worksheet,
+  r1: number,
+  c1: number,
+  r2: number,
+  c2: number,
+  apply: (cell: Cell) => void,
+) {
+  for (let r = r1; r <= r2; r++) {
+    for (let c = c1; c <= c2; c++) {
+      apply(ws.getCell(r, c));
+    }
+  }
+}
+
+export async function exportExcel(inv: Invoice) {
   const t = computeTotals(inv);
-  const aoa: (string | number | null)[][] = [];
-  const push = (...cells: (string | number | null)[]) => aoa.push(cells);
+  const wb = new ExcelJS.Workbook();
+  wb.creator = FIRM.name;
+  wb.created = new Date();
+  const ws = wb.addWorksheet(inv.workOrderNo || "Tax Invoice", {
+    pageSetup: {
+      paperSize: 9, // A4
+      orientation: "portrait",
+      fitToPage: true,
+      fitToWidth: 1,
+      fitToHeight: 0,
+      // Generous top/bottom margins so the printer leaves the pre-printed
+      // letterhead's header & footer artwork untouched.
+      margins: { top: 1.7, bottom: 1.1, left: 0.45, right: 0.45, header: 0.3, footer: 0.3 },
+      horizontalCentered: true,
+    },
+    headerFooter: {
+      oddFooter: "&L&8This is a system-generated tax invoice.&R&8Page &P of &N",
+    },
+  });
 
-  push("TAX INVOICE", null, null, null, null, null);
-  push("To, Executive Engineer", null, null, null, `RE Bill No : ${inv.reBillNo}`, null);
-  push(`Section :- ${inv.section}`, null, null, null, `RA Bill Date : ${inv.raBillDate}`, null);
-  push(`Sub Division :- ${inv.subDivision}`, null, null, null, `Work Order No : ${inv.workOrderNo}`, null);
-  push(
-    `M.S.E.D.C.L O & M Division :- ${inv.division}`,
-    null,
-    null,
-    null,
-    `W.O. Date : ${inv.workOrderDate}`,
-    null,
-  );
-  push(
-    `Work Order: EE/${inv.division}/LOE :- ${inv.loeNo}   Dt. ${inv.loeDate}`,
-    null,
-    null,
-    null,
-    `GSTIN : ${FIRM.gstin}`,
-    null,
-  );
-  push(null);
-  push("Sr.No", "Description", "Unit", "Qty", "Rate", "Amount (Rs.)");
+  ws.columns = [
+    { width: 9 },
+    { width: 52 },
+    { width: 9 },
+    { width: 9 },
+    { width: 16 },
+    { width: 16 },
+  ];
 
-  const headerRows = aoa.length;
-  for (const r of bodyRows(inv)) {
-    if (isSectionRow(r) && r.amount === "") push(String(r.sr), null, null, null, null, null);
-    else if (isSectionRow(r)) push(String(r.sr), null, null, null, null, Number(r.amount));
-    else push(r.sr, r.desc, r.unit, Number(r.qty), Number(r.rate), Number(r.qty) * Number(r.rate));
+  let r = 1;
+
+  // ---- Title -------------------------------------------------------
+  ws.mergeCells(r, 1, r, 6);
+  const title = ws.getCell(r, 1);
+  title.value = "TAX INVOICE";
+  title.font = { bold: true, size: 16, color: { argb: `FF${INK_HEX}` } };
+  title.alignment = { horizontal: "center", vertical: "middle" };
+  ws.getRow(r).height = 24;
+  r++;
+  ws.mergeCells(r, 1, r, 6);
+  const woTag = ws.getCell(r, 1);
+  woTag.value = `WO No. ${inv.workOrderNo || "-"}`;
+  woTag.font = { size: 8, italic: true, color: { argb: `FF${LINE_HEX}` } };
+  woTag.alignment = { horizontal: "right" };
+  r++;
+
+  // ---- Info box (bordered, two columns) -----------------------------
+  const boxTop = r;
+  const leftPairs: [string, string][] = [
+    ["To,", "Executive Engineer"],
+    ["Section :-", inv.section],
+    ["Sub Division :-", inv.subDivision],
+    ["Division :-", `M.S.E.D.C.L O & M ${inv.division}`],
+    ["Work Order :-", `EE/${inv.division}/LOE :- ${inv.loeNo}  Dt. ${inv.loeDate}`],
+  ];
+  const rightPairs: [string, string][] = [
+    ["RE Bill No :", inv.reBillNo],
+    ["RA Bill Date :", inv.raBillDate],
+    ["Work Order No :", inv.workOrderNo],
+    ["W.O. Date :", inv.workOrderDate],
+    ["GSTIN :", FIRM.gstin],
+  ];
+  leftPairs.forEach(([label, value], i) => {
+    const row = boxTop + i;
+    ws.mergeCells(row, 1, row, 4);
+    const c = ws.getCell(row, 1);
+    c.value = {
+      richText: [
+        { font: { bold: true, size: 9 }, text: `${label} ` },
+        { font: { size: 9 }, text: value },
+      ],
+    };
+    c.alignment = { vertical: "middle", wrapText: true };
+    ws.getRow(row).height = 15;
+  });
+  rightPairs.forEach(([label, value], i) => {
+    const row = boxTop + i;
+    ws.mergeCells(row, 5, row, 6);
+    const c = ws.getCell(row, 5);
+    c.value = {
+      richText: [
+        { font: { bold: true, size: 9 }, text: `${label} ` },
+        { font: { size: 9 }, text: String(value) },
+      ],
+    };
+    c.alignment = { vertical: "middle", wrapText: true };
+  });
+  const boxBottom = boxTop + leftPairs.length - 1;
+  styleRange(ws, boxTop, 1, boxBottom, 6, (cell) => {
+    cell.border = { ...boxBorder };
+  });
+  // divider between the two columns
+  styleRange(ws, boxTop, 4, boxBottom, 4, (cell) => {
+    cell.border = { ...cell.border, right: thin };
+  });
+  r = boxBottom + 2;
+
+  // ---- Table header --------------------------------------------------
+  const headerRow = r;
+  ["Sr.No", "Description", "Unit", "Qty", "Rate", "Amount (Rs.)"].forEach((h, i) => {
+    const c = ws.getCell(headerRow, i + 1);
+    c.value = h;
+    c.font = { bold: true, size: 9.5, color: { argb: "FFFFFFFF" } };
+    c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: `FF${ACCENT_HEX}` } };
+    c.alignment = { horizontal: i === 1 ? "left" : "center", vertical: "middle" };
+    c.border = { ...boxBorder };
+  });
+  ws.getRow(headerRow).height = 18;
+  ws.views = [{ state: "frozen", ySplit: headerRow }];
+  r++;
+
+  let zebraIdx = 0;
+  for (const row of bodyRows(inv)) {
+    if (isSectionRow(row)) {
+      const hasAmount = row.amount !== "";
+      ws.mergeCells(r, 1, r, hasAmount ? 5 : 6);
+      const c = ws.getCell(r, 1);
+      c.value = String(row.sr);
+      c.font = { bold: true, size: 9, color: { argb: `FF${ACCENT_HEX}` } };
+      c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: `FF${BAND_HEX}` } };
+      c.alignment = { vertical: "middle" };
+      if (hasAmount) {
+        const amt = ws.getCell(r, 6);
+        amt.value = Number(row.amount);
+        amt.numFmt = "#,##0.00";
+        amt.font = { bold: true, size: 9 };
+        amt.fill = { type: "pattern", pattern: "solid", fgColor: { argb: `FF${BAND_HEX}` } };
+        amt.alignment = { horizontal: "right", vertical: "middle" };
+      }
+      styleRange(ws, r, 1, r, 6, (cell) => (cell.border = { ...boxBorder }));
+    } else {
+      const vals = [
+        row.sr,
+        row.desc,
+        row.unit,
+        Number(row.qty),
+        Number(row.rate),
+        Number(row.qty) * Number(row.rate),
+      ];
+      vals.forEach((v, i) => {
+        const c = ws.getCell(r, i + 1);
+        c.value = v as string | number;
+        c.font = { size: 9 };
+        c.border = { ...boxBorder };
+        c.alignment = {
+          horizontal: i === 1 ? "left" : i >= 3 ? "right" : "center",
+          vertical: "middle",
+          wrapText: i === 1,
+        };
+        if (i === 4 || i === 5) c.numFmt = "#,##0.00";
+        if (zebraIdx % 2 === 1) {
+          c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: `FF${ZEBRA_HEX}` } };
+        }
+      });
+      zebraIdx++;
+    }
+    r++;
   }
 
-  push("TOTAL (Excl. Taxes)", null, null, null, null, t.totalExclusive);
-  push("G.S.T. 18%", null, null, null, null, t.gst);
-  push("GRAND TOTAL (Incl. Taxes)", null, null, null, null, t.totalInclusive);
-  push(`Amount in words: ${inv.amountInWords}`, null, null, null, null, null);
-  push(`GST No: ${FIRM.gstin}      PAN No: ${FIRM.pan}`, null, null, null, null, null);
-  push(null);
-  push("CERTIFICATE", null, null, null, null, null);
-  CERTIFICATE_LINES.forEach((line, i) => push(`${i + 1})`, line, null, null, null, null));
-  push(null);
-  push(null, null, null, null, `For ${FIRM.name}`, null);
-  push(null);
-  push(null, null, null, null, "Authorised Signatory", null);
-
-  const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws["!cols"] = [{ wch: 8 }, { wch: 55 }, { wch: 8 }, { wch: 8 }, { wch: 18 }, { wch: 16 }];
-  const merges: XLSX.Range[] = [
-    { s: { r: 0, c: 0 }, e: { r: 0, c: 5 } },
-    { s: { r: 1, c: 0 }, e: { r: 1, c: 3 } },
-    { s: { r: 2, c: 0 }, e: { r: 2, c: 3 } },
-    { s: { r: 3, c: 0 }, e: { r: 3, c: 3 } },
-    { s: { r: 4, c: 0 }, e: { r: 4, c: 3 } },
-    { s: { r: 5, c: 0 }, e: { r: 5, c: 3 } },
+  // ---- Totals ----------------------------------------------------------
+  const totalLines: [string, number][] = [
+    ["TOTAL (Excl. Taxes)", t.totalExclusive],
+    ["G.S.T. 18%", t.gst],
+    ["GRAND TOTAL (Incl. Taxes)", t.totalInclusive],
   ];
-  bodyRows(inv).forEach((r, i) => {
-    if (isSectionRow(r)) {
-      const row = headerRows + i;
-      merges.push({ s: { r: row, c: 0 }, e: { r: row, c: r.amount === "" ? 5 : 4 } });
-    }
+  totalLines.forEach(([label, val], i) => {
+    const isGrand = i === totalLines.length - 1;
+    ws.mergeCells(r, 1, r, 5);
+    const lbl = ws.getCell(r, 1);
+    lbl.value = label;
+    lbl.font = { bold: true, size: 9.5, color: { argb: isGrand ? "FFFFFFFF" : `FF${INK_HEX}` } };
+    lbl.alignment = { horizontal: "right", vertical: "middle" };
+    const amt = ws.getCell(r, 6);
+    amt.value = val;
+    amt.numFmt = "#,##0.00";
+    amt.font = { bold: true, size: 9.5, color: { argb: isGrand ? "FFFFFFFF" : `FF${INK_HEX}` } };
+    amt.alignment = { horizontal: "right", vertical: "middle" };
+    styleRange(ws, r, 1, r, 6, (cell) => {
+      cell.border = { ...boxBorder };
+      if (isGrand) cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: `FF${ACCENT_HEX}` } };
+    });
+    r++;
   });
-  const totalsStart = headerRows + bodyRows(inv).length;
-  for (let i = 0; i < 3; i++)
-    merges.push({ s: { r: totalsStart + i, c: 0 }, e: { r: totalsStart + i, c: 4 } });
-  for (let i = 3; i < 5; i++)
-    merges.push({ s: { r: totalsStart + i, c: 0 }, e: { r: totalsStart + i, c: 5 } });
-  const certStart = totalsStart + 6;
-  merges.push({ s: { r: certStart, c: 0 }, e: { r: certStart, c: 5 } });
-  CERTIFICATE_LINES.forEach((_, i) =>
-    merges.push({ s: { r: certStart + 1 + i, c: 1 }, e: { r: certStart + 1 + i, c: 5 } }),
-  );
-  const sigForRow = certStart + CERTIFICATE_LINES.length + 2;
-  merges.push({ s: { r: sigForRow, c: 4 }, e: { r: sigForRow, c: 5 } });
-  merges.push({ s: { r: sigForRow + 2, c: 4 }, e: { r: sigForRow + 2, c: 5 } });
-  ws["!merges"] = merges;
+  r++;
 
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, inv.workOrderNo || "Tax Invoice");
-  XLSX.writeFile(wb, `${fileBase(inv)}.xlsx`);
+  // ---- Amount in words + GST/PAN ---------------------------------------
+  ws.mergeCells(r, 1, r, 6);
+  ws.getCell(r, 1).value = `Amount in words: ${inv.amountInWords}`;
+  ws.getCell(r, 1).font = { bold: true, size: 9.5 };
+  r++;
+  ws.mergeCells(r, 1, r, 6);
+  ws.getCell(r, 1).value = `GST No: ${FIRM.gstin}      PAN No: ${FIRM.pan}`;
+  ws.getCell(r, 1).font = { size: 9.5 };
+  r += 2;
+
+  // ---- Signature block (comes right after totals, as per format) -------
+  ws.mergeCells(r, 5, r, 6);
+  const forFirm = ws.getCell(r, 5);
+  forFirm.value = `For ${FIRM.name}`;
+  forFirm.font = { bold: true, size: 9.5 };
+  forFirm.alignment = { horizontal: "right" };
+  r += 3;
+  ws.mergeCells(r, 5, r, 6);
+  const sig = ws.getCell(r, 5);
+  sig.value = "Authorised Signatory";
+  sig.font = { size: 9.5 };
+  sig.alignment = { horizontal: "right" };
+  r++;
+
+  // ---- 5-6 line gap, then CERTIFICATE below the signature ---------------
+  r += 6;
+
+  ws.mergeCells(r, 1, r, 6);
+  const certHead = ws.getCell(r, 1);
+  certHead.value = "CERTIFICATE";
+  certHead.font = { bold: true, size: 10.5, color: { argb: `FF${ACCENT_HEX}` } };
+  certHead.border = { bottom: { style: "medium", color: { argb: `FF${ACCENT_HEX}` } } };
+  r++;
+
+  CERTIFICATE_LINES.forEach((line, i) => {
+    ws.getCell(r, 1).value = `${i + 1})`;
+    ws.getCell(r, 1).font = { bold: true, size: 9 };
+    ws.getCell(r, 1).alignment = { vertical: "top" };
+    ws.mergeCells(r, 2, r, 6);
+    const c = ws.getCell(r, 2);
+    c.value = line;
+    c.font = { size: 9 };
+    c.alignment = { wrapText: true, vertical: "top" };
+    ws.getRow(r).height = 14;
+    r++;
+  });
+
+  ws.pageSetup.printArea = `A1:F${r}`;
+
+  const buf = await wb.xlsx.writeBuffer();
+  downloadBlob(
+    new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
+    `${fileBase(inv)}.xlsx`,
+  );
 }
 
 /* -------------------------------- PDF --------------------------------- */
@@ -226,16 +425,16 @@ export function exportPdf(inv: Invoice) {
   y = boxTop + boxH + 16;
 
   // ---- Line items table -----------------------------------------------
-  const rows = bodyRows(inv).map((r) =>
-    isSectionRow(r)
-      ? [String(r.sr), "", "", "", "", r.amount === "" ? "" : inr(Number(r.amount))]
+  const rows = bodyRows(inv).map((rr) =>
+    isSectionRow(rr)
+      ? [String(rr.sr), "", "", "", "", rr.amount === "" ? "" : inr(Number(rr.amount))]
       : [
-          String(r.sr),
-          r.desc,
-          r.unit,
-          String(r.qty),
-          inr(Number(r.rate)),
-          inr(Number(r.qty) * Number(r.rate)),
+          String(rr.sr),
+          rr.desc,
+          rr.unit,
+          String(rr.qty),
+          inr(Number(rr.rate)),
+          inr(Number(rr.qty) * Number(rr.rate)),
         ],
   );
 
@@ -325,7 +524,29 @@ export function exportPdf(inv: Invoice) {
 
   wrap(`Amount in words: ${inv.amountInWords}`, 9, 0, true);
   wrap(`GST No: ${FIRM.gstin}      PAN No: ${FIRM.pan}`, 9);
-  y += 6;
+  y += 10;
+
+  // ---- Signature block comes right after totals — kept as one unit so it
+  // can never be orphaned onto its own page. -----------------------------
+  const SIGNATURE_BLOCK_H = 46;
+  ensureSpace(SIGNATURE_BLOCK_H);
+  doc.setFont("helvetica", "bold").setFontSize(9.5).setTextColor(...INK);
+  doc.text(`For ${FIRM.name}`, W - M, y, { align: "right" });
+  y += 26;
+  doc.setFont("helvetica", "normal").setFontSize(8.5).setTextColor(0, 0, 0);
+  doc.text("Authorised Signatory", W - M, y, { align: "right" });
+
+  // ---- 5-6 line gap, then the CERTIFICATE block below the signature -----
+  y += 8.5 * 6;
+
+  // Keep the certificate heading + all its lines together where possible;
+  // if it can't fit on the current page, push the whole block to a new one
+  // rather than splitting it right after the heading.
+  const certBlockH = 24 + CERTIFICATE_LINES.length * 12.5;
+  if (y + Math.min(certBlockH, 140) > H - BOTTOM) {
+    doc.addPage();
+    y = TOP;
+  }
 
   ensureSpace(16);
   doc.setFillColor(...ACCENT);
@@ -333,15 +554,6 @@ export function exportPdf(inv: Invoice) {
   y += 14;
   wrap("CERTIFICATE", 10, 0, true);
   CERTIFICATE_LINES.forEach((line, i) => wrap(`${i + 1})  ${line}`, 8.5, 8));
-
-  // ---- Signature block (kept together, never orphaned alone) -----------
-  ensureSpace(50);
-  y += 14;
-  doc.setFont("helvetica", "bold").setFontSize(9.5).setTextColor(...INK);
-  doc.text(`For ${FIRM.name}`, W - M, y, { align: "right" });
-  y += 26;
-  doc.setFont("helvetica", "normal").setFontSize(8.5).setTextColor(0, 0, 0);
-  doc.text("Authorised Signatory", W - M, y, { align: "right" });
 
   // ---- Footer: disclaimer + page numbers on every page ------------------
   const pageCount = doc.getNumberOfPages();
