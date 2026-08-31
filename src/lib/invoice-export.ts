@@ -166,40 +166,60 @@ export function exportPdf(inv: Invoice) {
   const TOP = 120; // blank space reserved for pre-printed letterhead
   const BOTTOM = 70; // blank space reserved for footer
 
-  const INK: [number, number, number] = [30, 41, 59];
-  const LINE: [number, number, number] = [100, 116, 139];
+  const INK: [number, number, number] = [17, 24, 39];
+  const ACCENT: [number, number, number] = [15, 76, 129];
+  const LINE: [number, number, number] = [148, 163, 184];
   const BAND: [number, number, number] = [241, 245, 249];
+  const ZEBRA: [number, number, number] = [248, 250, 252];
 
   let y = TOP;
 
-  // ---- Title -------------------------------------------------------
-  doc.setFont("helvetica", "bold").setFontSize(15).setTextColor(...INK);
+  // ---- Title + invoice ref tag -----------------------------------------
+  doc.setFont("helvetica", "bold").setFontSize(16).setTextColor(...INK);
   doc.text("TAX INVOICE", W / 2, y, { align: "center" });
-  doc.setDrawColor(...INK).setLineWidth(0.8);
-  doc.line(W / 2 - 44, y + 4, W / 2 + 44, y + 4);
-  y += 22;
+  doc.setFillColor(...ACCENT);
+  doc.rect(W / 2 - 50, y + 5, 100, 2.4, "F");
+  doc.setFont("helvetica", "normal").setFontSize(8).setTextColor(...LINE);
+  doc.text(`WO No. ${inv.workOrderNo || "-"}`, W - M, y - 4, { align: "right" });
+  y += 24;
 
-  // ---- Info box ------------------------------------------------------
+  // ---- Info box (bold labels, normal values) -----------------------------
   const boxTop = y;
-  const left = [
-    "To, Executive Engineer",
-    `Section :- ${inv.section}`,
-    `Sub Division :- ${inv.subDivision}`,
-    `M.S.E.D.C.L O & M Division :- ${inv.division}`,
-    `Work Order: EE/${inv.division}/LOE :- ${inv.loeNo}   Dt. ${inv.loeDate}`,
+  const leftPairs: [string, string][] = [
+    ["To,", "Executive Engineer"],
+    ["Section :-", inv.section],
+    ["Sub Division :-", inv.subDivision],
+    ["Division :-", `M.S.E.D.C.L O & M ${inv.division}`],
+    ["Work Order :-", `EE/${inv.division}/LOE :- ${inv.loeNo}  Dt. ${inv.loeDate}`],
   ];
-  const right = [
-    `RE Bill No : ${inv.reBillNo}`,
-    `RA Bill Date : ${inv.raBillDate}`,
-    `Work Order No : ${inv.workOrderNo}`,
-    `W.O. Date : ${inv.workOrderDate}`,
-    `GSTIN : ${FIRM.gstin}`,
+  const rightPairs: [string, string][] = [
+    ["RE Bill No :", inv.reBillNo],
+    ["RA Bill Date :", inv.raBillDate],
+    ["Work Order No :", inv.workOrderNo],
+    ["W.O. Date :", inv.workOrderDate],
+    ["GSTIN :", FIRM.gstin],
   ];
-  doc.setFontSize(9).setFont("helvetica", "normal").setTextColor(0, 0, 0);
   const rowH = 14;
-  left.forEach((l, i) => doc.text(l, M + 8, boxTop + 12 + i * rowH, { maxWidth: W / 2 - M - 16 }));
-  right.forEach((l, i) => doc.text(l, W - M - 8, boxTop + 12 + i * rowH, { align: "right" }));
-  const boxH = rowH * left.length + 16;
+  const drawPair = (x: number, align: "left" | "right", pairs: [string, string][]) => {
+    pairs.forEach(([label, value], i) => {
+      const ry = boxTop + 12 + i * rowH;
+      doc.setFont("helvetica", "bold").setFontSize(9).setTextColor(...INK);
+      if (align === "left") {
+        doc.text(label, x, ry);
+        doc.setFont("helvetica", "normal").setTextColor(30, 30, 30);
+        doc.text(value, x + doc.getTextWidth(label) + 4, ry, { maxWidth: W / 2 - x - 8 });
+      } else {
+        const full = `${label} ${value}`;
+        doc.setFont("helvetica", "normal").setTextColor(30, 30, 30);
+        doc.text(full, x, ry, { align: "right" });
+      }
+    });
+  };
+  drawPair(M + 8, "left", leftPairs);
+  drawPair(W - M - 8, "right", rightPairs);
+  const boxH = rowH * leftPairs.length + 16;
+  doc.setFillColor(...ACCENT);
+  doc.rect(M, boxTop, W - 2 * M, 2.2, "F");
   doc.setDrawColor(...LINE).setLineWidth(0.6);
   doc.rect(M, boxTop, W - 2 * M, boxH);
   doc.line(W / 2, boxTop, W / 2, boxTop + boxH);
@@ -230,7 +250,7 @@ export function exportPdf(inv: Invoice) {
       lineWidth: 0.5,
       textColor: [0, 0, 0],
     },
-    headStyles: { fillColor: INK, textColor: 255, halign: "center", fontStyle: "bold" },
+    headStyles: { fillColor: ACCENT, textColor: 255, halign: "center", fontStyle: "bold" },
     columnStyles: {
       0: { cellWidth: 42, halign: "center" },
       1: { cellWidth: "auto" },
@@ -249,6 +269,9 @@ export function exportPdf(inv: Invoice) {
           data.cell.styles.fontStyle = "bold";
         }
         data.cell.styles.fillColor = BAND;
+        data.cell.styles.textColor = ACCENT;
+      } else if (data.section === "body" && data.row.index % 2 === 1) {
+        data.cell.styles.fillColor = ZEBRA;
       }
     },
   });
@@ -269,14 +292,14 @@ export function exportPdf(inv: Invoice) {
   totalLines.forEach(([label, val], i) => {
     const ry = y + i * totalsRowH;
     if (i === totalLines.length - 1) {
-      doc.setFillColor(...BAND);
+      doc.setFillColor(...ACCENT);
       doc.rect(totalsX, ry, totalsW, totalsRowH, "F");
       doc.setDrawColor(...LINE).rect(totalsX, ry, totalsW, totalsRowH);
-      doc.setFont("helvetica", "bold");
+      doc.setFont("helvetica", "bold").setTextColor(255, 255, 255);
     } else {
-      doc.setFont("helvetica", "normal");
+      doc.setFont("helvetica", "normal").setTextColor(0, 0, 0);
     }
-    doc.setFontSize(9).setTextColor(0, 0, 0);
+    doc.setFontSize(9);
     doc.text(label, totalsX + 8, ry + 11);
     doc.text(val, totalsX + totalsW - 8, ry + 11, { align: "right" });
     if (i > 0) doc.line(totalsX, ry, totalsX + totalsW, ry);
@@ -305,27 +328,31 @@ export function exportPdf(inv: Invoice) {
   y += 6;
 
   ensureSpace(16);
-  doc.setDrawColor(...LINE).setLineWidth(0.6);
-  doc.line(M, y, W - M, y);
-  y += 12;
+  doc.setFillColor(...ACCENT);
+  doc.rect(M, y, W - 2 * M, 1.4, "F");
+  y += 14;
   wrap("CERTIFICATE", 10, 0, true);
   CERTIFICATE_LINES.forEach((line, i) => wrap(`${i + 1})  ${line}`, 8.5, 8));
 
   // ---- Signature block (kept together, never orphaned alone) -----------
   ensureSpace(50);
   y += 14;
-  doc.setFont("helvetica", "bold").setFontSize(9.5).setTextColor(0, 0, 0);
+  doc.setFont("helvetica", "bold").setFontSize(9.5).setTextColor(...INK);
   doc.text(`For ${FIRM.name}`, W - M, y, { align: "right" });
   y += 26;
-  doc.setFont("helvetica", "normal").setFontSize(8.5);
+  doc.setFont("helvetica", "normal").setFontSize(8.5).setTextColor(0, 0, 0);
   doc.text("Authorised Signatory", W - M, y, { align: "right" });
 
-  // ---- Footer: page numbers + reserved blank strip on every page -------
+  // ---- Footer: disclaimer + page numbers on every page ------------------
   const pageCount = doc.getNumberOfPages();
   for (let p = 1; p <= pageCount; p++) {
     doc.setPage(p);
-    doc.setFont("helvetica", "normal").setFontSize(7.5).setTextColor(120, 120, 120);
-    doc.text(`Page ${p} of ${pageCount}`, W / 2, H - BOTTOM + 24, { align: "center" });
+    doc.setDrawColor(...LINE).setLineWidth(0.4);
+    doc.line(M, H - BOTTOM + 12, W - M, H - BOTTOM + 12);
+    doc.setFont("helvetica", "italic").setFontSize(7).setTextColor(120, 120, 120);
+    doc.text("This is a system-generated tax invoice.", M, H - BOTTOM + 24);
+    doc.setFont("helvetica", "normal");
+    doc.text(`Page ${p} of ${pageCount}`, W - M, H - BOTTOM + 24, { align: "right" });
   }
 
   doc.save(`${fileBase(inv)}.pdf`);
