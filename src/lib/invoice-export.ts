@@ -162,6 +162,12 @@ export async function exportExcelBulk(invoices: Invoice[]) {
   );
 }
 
+function colAlign(i: number): "left" | "center" | "right" {
+  if (i === 1) return "left"; // Description
+  if (i >= 3) return "right"; // Qty, Rate, Amount
+  return "center"; // Sr.No, Unit
+}
+
 function buildInvoiceSheet(wb: ExcelJS.Workbook, inv: Invoice, sheetName: string) {
   const t = computeTotals(inv);
   const ws = wb.addWorksheet(sheetName, {
@@ -171,14 +177,17 @@ function buildInvoiceSheet(wb: ExcelJS.Workbook, inv: Invoice, sheetName: string
       fitToPage: true,
       fitToWidth: 1,
       fitToHeight: 0,
-      // Generous top/bottom margins so the printer leaves the pre-printed
-      // letterhead's header & footer artwork untouched.
-      margins: { top: 1.7, bottom: 1.1, left: 0.45, right: 0.45, header: 0.3, footer: 0.3 },
+      // Measured directly off Aditya Enterprises' printed letterhead: the
+      // header artwork fills the top 2.01in and the footer artwork fills
+      // the bottom 2.01in of the A4 sheet — these margins keep every cell
+      // clear of both so the sheet can be printed straight onto it.
+      margins: { top: 2.15, bottom: 2.15, left: 0.45, right: 0.45, header: 0, footer: 0 },
       horizontalCentered: true,
     },
-    headerFooter: {
-      oddFooter: "&L&8This is a system-generated tax invoice.&R&8Page &P of &N",
-    },
+    // No header/footer text of our own — the letterhead already carries
+    // the firm's contact details in that reserved band, and Excel's
+    // header/footer prints inside the margin, which would land on top of
+    // the pre-printed artwork.
   });
 
   ws.columns = [
@@ -265,7 +274,7 @@ function buildInvoiceSheet(wb: ExcelJS.Workbook, inv: Invoice, sheetName: string
     c.value = h;
     c.font = { bold: true, size: 9.5, color: { argb: "FFFFFFFF" } };
     c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: `FF${ACCENT_HEX}` } };
-    c.alignment = { horizontal: i === 1 ? "left" : "center", vertical: "middle" };
+    c.alignment = { horizontal: colAlign(i), vertical: "middle" };
     c.border = { ...boxBorder };
   });
   ws.getRow(headerRow).height = 18;
@@ -306,7 +315,7 @@ function buildInvoiceSheet(wb: ExcelJS.Workbook, inv: Invoice, sheetName: string
         c.font = { size: 9 };
         c.border = { ...boxBorder };
         c.alignment = {
-          horizontal: i === 1 ? "left" : i >= 3 ? "right" : "center",
+          horizontal: colAlign(i),
           vertical: "middle",
           wrapText: i === 1,
         };
