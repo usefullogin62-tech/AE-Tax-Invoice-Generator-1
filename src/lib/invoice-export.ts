@@ -405,9 +405,23 @@ function buildInvoiceSheet(wb: ExcelJS.Workbook, inv: Invoice, sheetName: string
 
 /* -------------------------------- PDF --------------------------------- */
 
+/** Tries the invoice at full size first; only shrinks fonts/padding a notch
+ * at a time, and only as far as needed, to keep everything within a single
+ * front+back sheet (2 pages) instead of spilling onto a fresh letterhead
+ * page. Never shrinks below 87% (stays legible). */
+function pickScale(inv: Invoice): number {
+  const candidates = [1, 0.93, 0.87];
+  for (const s of candidates) {
+    const probe = new jsPDF({ unit: "pt", format: "a4" });
+    drawInvoicePage(probe, inv, s);
+    if (probe.getNumberOfPages() <= 2) return s;
+  }
+  return candidates[candidates.length - 1];
+}
+
 export function exportPdf(inv: Invoice) {
   const doc = new jsPDF({ unit: "pt", format: "a4" });
-  drawInvoicePage(doc, inv);
+  drawInvoicePage(doc, inv, pickScale(inv));
   doc.save(`${fileBase(inv)}.pdf`);
 }
 
@@ -416,22 +430,37 @@ export function exportPdfBulk(invoices: Invoice[]) {
   const doc = new jsPDF({ unit: "pt", format: "a4" });
   invoices.forEach((inv, i) => {
     if (i > 0) doc.addPage();
-    drawInvoicePage(doc, inv);
+    drawInvoicePage(doc, inv, pickScale(inv));
   });
   const first = invoices[0];
   const label = first ? `${first.section || "Bulk"}_${invoices.length}_Invoices` : "Bulk_Invoices";
   doc.save(`Tax_Invoices_${label.replace(/[^a-zA-Z0-9_-]/g, "_")}.pdf`);
 }
 
+/** Front pages (1st, 3rd, 5th... of THIS invoice) reserve the letterhead's
+ * top/bottom band. Back pages (2nd, 4th...) are printed on the blank
+ * reverse of the previous sheet, so they get the full page — this is what
+ * lets a long item list spill onto page 2 without wasting a fresh
+ * pre-printed sheet, and is why the certificate/signature block fights so
+ * hard (via pickScale above) to stay within page 1+2 instead of forcing a
+ * page 3. */
+function pageMarginsFor(relativePage: number) {
+  return relativePage % 2 === 1 ? { top: 154.8, bottom: 154.8 } : { top: 24, bottom: 24 };
+}
+
 /** Draws one invoice starting at the current page's top; adds internal pages
- * of its own (via ensureSpace) if a single invoice overflows one page. */
-function drawInvoicePage(doc: jsPDF, inv: Invoice) {
+ * of its own (via ensureSpace) if a single invoice overflows one page.
+ * `scale` (0.87–1) shrinks fonts/padding uniformly so more content fits
+ * before a new page is ever added. */
+function drawInvoicePage(doc: jsPDF, inv: Invoice, scale = 1) {
   const t = computeTotals(inv);
   const W = doc.internal.pageSize.getWidth();
   const H = doc.internal.pageSize.getHeight();
   const M = 34;
-  const TOP = 154.8; // 2.15in — matches the Excel export's letterhead margin
-  const BOTTOM = 154.8;
+
+  const invoiceStartPage = doc.getCurrentPageInfo().pageNumber;
+  const relPage = () => doc.getCurrentPageInfo().pageNumber - invoiceStartPage + 1;
+  const TOP = pageMarginsFor(1).top; // this invoice's page 1 is always a front (letterhead) page
 
   const INK: [number, number, number] = [17, 24, 39];
   const ACCENT: [number, number, number] = [15, 76, 129];
@@ -499,9 +528,9 @@ function drawInvoicePage(doc: jsPDF, inv: Invoice) {
   doc.setDrawColor(...LINE).setLineWidth(0.6);
   doc.rect(M, boxTop, W - 2 * M, boxH);
   doc.line(W / 2, boxTop, W / 2, boxTop + boxH);
-  y = boxTop + boxH + 16;
+  y = boxTop + boxH + 16 * scale;
 
-  // ---- Line items table -----------------------------------------------
+  // ---- Line items table (fontSize/padding shrink with `scale`) ----------
   const rows = bodyRows(inv).map((rr) =>
     isSectionRow(rr)
       ? [String(rr.sr), "", "", "", "", rr.amount === "" ? "" : inr(Number(rr.amount))]
@@ -520,8 +549,8 @@ function drawInvoicePage(doc: jsPDF, inv: Invoice) {
     head: [["Sr.No", "Description", "Unit", "Qty", "Rate", "Amount (Rs.)"]],
     body: rows,
     styles: {
-      fontSize: 9,
-      cellPadding: 3,
+      fontSize: 9 * scale,
+      cellPadding: 3 * scale,
       lineColor: LINE,
       lineWidth: 0.5,
       textColor: [0, 0, 0],
@@ -531,7 +560,7 @@ function drawInvoicePage(doc: jsPDF, inv: Invoice) {
       textColor: 255,
       halign: "center",
       fontStyle: "bold",
-      fontSize: 9.5,
+      fontSize: 9.5 * scale,
     },
     columnStyles: {
       0: { cellWidth: 42, halign: "center" },
@@ -541,7 +570,15 @@ function drawInvoicePage(doc: jsPDF, inv: Invoice) {
       4: { cellWidth: 58, halign: "right" },
       5: { cellWidth: 72, halign: "right" },
     },
-    margin: { left: M, right: M, top: TOP, bottom: BOTTOM },
+    // Page 1 (front) reserves the letterhead band. didDrawPage flips the
+    // margin for whichever page comes next: back pages get almost the full
+    // sheet, front pages reserve the band again — see pageMarginsFor above.
+    margin: { left: M, right: M, top: TOP, bottom: pageMarginsFor(1).bottom },
+    didDrawPage: (data) => {
+      const next = pageMarginsFor(relPage() + 1);
+      data.settings.margin.top = next.top;
+      data.settings.margin.bottom = next.bottom;
+    },
     didParseCell: (data) => {
       const raw = data.row.raw as string[];
       const isBanner = data.section === "body" && raw[1] === "" && raw[2] === "";
@@ -560,39 +597,12 @@ function drawInvoicePage(doc: jsPDF, inv: Invoice) {
 
   y = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY;
 
-  // ---- Totals box (right aligned, boxed) --------------------------------
-  const totalsW = 220;
-  const totalsX = W - M - totalsW;
-  const totalLines: [string, string][] = [
-    ["TOTAL (Excl. Taxes)", inr(t.totalExclusive)],
-    ["G.S.T. 18%", inr(t.gst)],
-    ["GRAND TOTAL (Incl. Taxes)", inr(t.totalInclusive)],
-  ];
-  const totalsRowH = 16;
-  doc.setDrawColor(...LINE).setLineWidth(0.6);
-  doc.rect(totalsX, y, totalsW, totalsRowH * totalLines.length);
-  totalLines.forEach(([label, val], i) => {
-    const ry = y + i * totalsRowH;
-    if (i === totalLines.length - 1) {
-      doc.setFillColor(...ACCENT);
-      doc.rect(totalsX, ry, totalsW, totalsRowH, "F");
-      doc.setDrawColor(...LINE).rect(totalsX, ry, totalsW, totalsRowH);
-      doc.setFont("helvetica", "bold").setTextColor(255, 255, 255);
-    } else {
-      doc.setFont("helvetica", "normal").setTextColor(0, 0, 0);
-    }
-    doc.setFontSize(9.5);
-    doc.text(label, totalsX + 8, ry + 11);
-    doc.text(val, totalsX + totalsW - 8, ry + 11, { align: "right" });
-    if (i > 0) doc.line(totalsX, ry, totalsX + totalsW, ry);
-  });
-  y += totalsRowH * totalLines.length + 18;
-
-  // ---- Wrapping writer with page-break + reserved footer space ---------
+  // ---- Page-aware helpers for everything drawn after the table ----------
   const ensureSpace = (need: number) => {
-    if (y + need > H - BOTTOM) {
+    const bm = pageMarginsFor(relPage()).bottom;
+    if (y + need > H - bm) {
       doc.addPage();
-      y = TOP;
+      y = pageMarginsFor(relPage()).top;
     }
   };
   const wrap = (text: string, size = 8.5, indent = 0, bold = false) => {
@@ -608,55 +618,81 @@ function drawInvoicePage(doc: jsPDF, inv: Invoice) {
     }
   };
 
-  wrap(`GST No: ${FIRM.gstin}      PAN No: ${FIRM.pan}`, 9.5);
-  y += 10;
+  // ---- Totals box (right aligned, boxed) --------------------------------
+  const totalsW = 220;
+  const totalsX = W - M - totalsW;
+  const totalLines: [string, string][] = [
+    ["TOTAL (Excl. Taxes)", inr(t.totalExclusive)],
+    ["G.S.T. 18%", inr(t.gst)],
+    ["GRAND TOTAL (Incl. Taxes)", inr(t.totalInclusive)],
+  ];
+  const totalsRowH = 16 * scale;
+  ensureSpace(totalsRowH * totalLines.length);
+  doc.setDrawColor(...LINE).setLineWidth(0.6);
+  doc.rect(totalsX, y, totalsW, totalsRowH * totalLines.length);
+  totalLines.forEach(([label, val], i) => {
+    const ry = y + i * totalsRowH;
+    if (i === totalLines.length - 1) {
+      doc.setFillColor(...ACCENT);
+      doc.rect(totalsX, ry, totalsW, totalsRowH, "F");
+      doc.setDrawColor(...LINE).rect(totalsX, ry, totalsW, totalsRowH);
+      doc.setFont("helvetica", "bold").setTextColor(255, 255, 255);
+    } else {
+      doc.setFont("helvetica", "normal").setTextColor(0, 0, 0);
+    }
+    doc.setFontSize(9.5 * scale);
+    doc.text(label, totalsX + 8, ry + totalsRowH * 0.68);
+    doc.text(val, totalsX + totalsW - 8, ry + totalsRowH * 0.68, { align: "right" });
+    if (i > 0) doc.line(totalsX, ry, totalsX + totalsW, ry);
+  });
+  y += totalsRowH * totalLines.length + 16 * scale;
 
-  // ---- Signature block comes right after totals — kept as one unit so it
-  // can never be orphaned onto its own page. -----------------------------
-  const SIGNATURE_BLOCK_H = 46;
-  ensureSpace(SIGNATURE_BLOCK_H);
-  doc
-    .setFont("helvetica", "bold")
-    .setFontSize(9.5)
-    .setTextColor(...INK);
-  doc.text(`For ${FIRM.name}`, W - M, y, { align: "right" });
-  y += 26;
-  doc.setFont("helvetica", "normal").setFontSize(9.5).setTextColor(0, 0, 0);
-  doc.text("Authorised Signatory", W - M, y, { align: "right" });
+  wrap(`GST No: ${FIRM.gstin}      PAN No: ${FIRM.pan}`, 9.5 * scale);
+  y += 8 * scale;
 
-  // ---- 5-6 line gap, then the CERTIFICATE block below the signature -----
-  y += 8.5 * 6;
-
-  // Keep the certificate heading + all its lines together where possible;
-  // if it can't fit on the current page, push the whole block to a new one
-  // rather than splitting it right after the heading.
-  const certBlockH = 24 + CERTIFICATE_LINES.length * 12.5;
-  if (y + Math.min(certBlockH, 140) > H - BOTTOM) {
+  // ---- CERTIFICATE — bigger, centered heading, kept together where the
+  // available room allows (this is what pickScale is fighting to avoid
+  // spilling onto a fresh letterhead page). --------------------------------
+  const certBlockH = 30 * scale + CERTIFICATE_LINES.length * 13.5 * scale;
+  if (y + Math.min(certBlockH, 160) > H - pageMarginsFor(relPage()).bottom) {
     doc.addPage();
-    y = TOP;
+    y = pageMarginsFor(relPage()).top;
   }
 
   ensureSpace(16);
   doc.setFillColor(...ACCENT);
   doc.rect(M, y, W - 2 * M, 1.4, "F");
-  y += 14;
-  doc.setFontSize(10.5).setFont("helvetica", "bold").setTextColor(0, 0, 0);
+  y += 16 * scale;
+  doc.setFontSize(12 * scale).setFont("helvetica", "bold").setTextColor(0, 0, 0);
   doc.text("CERTIFICATE", W / 2, y, { align: "center" });
-  y += 10.5 + 4;
+  y += 12 * scale + 6 * scale;
   const certLine = (num: number, text: string) => {
-    const indent = 14;
-    doc.setFontSize(9).setFont("helvetica", "normal");
+    const indent = 16;
+    const fs = 9.5 * scale;
+    doc.setFontSize(fs).setFont("helvetica", "normal");
     const lines = doc.splitTextToSize(text, W - M * 2 - indent) as string[];
     lines.forEach((line, li) => {
-      ensureSpace(9 + 4);
+      ensureSpace(fs + 4.5);
       if (li === 0) {
         doc.setFont("helvetica", "bold").setTextColor(0, 0, 0);
         doc.text(`${num})`, M + indent / 2, y, { align: "center" });
       }
       doc.setFont("helvetica", "normal").setTextColor(0, 0, 0);
       doc.text(line, M + indent, y);
-      y += 9 + 4;
+      y += fs + 4.5;
     });
   };
   CERTIFICATE_LINES.forEach((line, i) => certLine(i + 1, line));
+
+  // ---- Signature — centered 12pt block, kept together, anchored bottom
+  // right beneath the certificate. -----------------------------------------
+  const sigCenterX = W - M - 90;
+  const SIGNATURE_BLOCK_H = 54;
+  ensureSpace(SIGNATURE_BLOCK_H);
+  y += 18 * scale;
+  doc.setFont("helvetica", "bold").setFontSize(12).setTextColor(...INK);
+  doc.text(`For ${FIRM.name}`, sigCenterX, y, { align: "center" });
+  y += 30;
+  doc.setFont("helvetica", "normal").setFontSize(12).setTextColor(0, 0, 0);
+  doc.text("Authorised Signatory", sigCenterX, y, { align: "center" });
 }
