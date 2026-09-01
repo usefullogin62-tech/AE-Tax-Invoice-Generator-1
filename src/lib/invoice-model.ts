@@ -16,6 +16,34 @@ export const CERTIFICATE_LINES = [
   "Bill is recoded for passing",
 ];
 
+/** "54" -> "55", "RE-054" -> "RE-055". Falls back to the input unchanged if
+ * it has no trailing digits to increment. */
+export function nextReBillNo(prev: string): string {
+  const m = /^(.*?)(\d+)(\D*)$/.exec(prev.trim());
+  if (!m) return prev;
+  const prefix = m[1] ?? "";
+  const digits = m[2] ?? "";
+  const suffix = m[3] ?? "";
+  if (!digits) return prev;
+  const next = String(parseInt(digits, 10) + 1).padStart(digits.length, "0");
+  return `${prefix}${next}${suffix}`;
+}
+
+/** For bulk uploads: carries RE Bill No (auto-incremented), RA Bill Date,
+ * Section & Sub Division forward from the previous PO in the same batch —
+ * every field stays manually editable afterwards. Only fills gaps; never
+ * overwrites values the work-order PDF itself parsed correctly. */
+export function chainInvoice(prev: Invoice | undefined, inv: Invoice): Invoice {
+  if (!prev) return inv;
+  return {
+    ...inv,
+    reBillNo: inv.reBillNo || nextReBillNo(prev.reBillNo),
+    raBillDate: inv.raBillDate || prev.raBillDate,
+    section: inv.section || prev.section,
+    subDivision: inv.subDivision || prev.subDivision,
+  };
+}
+
 export interface Invoice {
   id: string;
   savedAt: string;

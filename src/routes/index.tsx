@@ -24,6 +24,7 @@ import { exportExcel, exportExcelBulk, exportPdf, exportPdfBulk } from "@/lib/in
 import {
   CERTIFICATE_LINES,
   FIRM,
+  chainInvoice,
   computeTotals,
   inr,
   invoiceFromWorkOrder,
@@ -141,13 +142,19 @@ function Index() {
         }
       }
       if (parsedInvoices.length) {
-        setInvoices((cur) => [...cur, ...parsedInvoices]);
+        setInvoices((cur) => {
+          const merged = [...cur];
+          for (const inv of parsedInvoices) {
+            merged.push(chainInvoice(merged[merged.length - 1], inv));
+          }
+          return merged;
+        });
         setActiveIndex(invoices.length); // jump to first newly added
         setWarnings(allWarnings);
         toast.success(
           parsedInvoices.length === 1
             ? `Parsed ${parsedInvoices[0]!.materials.length} material and ${parsedInvoices[0]!.services.length} service line items.`
-            : `Parsed ${parsedInvoices.length} POs.`,
+            : `Parsed ${parsedInvoices.length} POs — RE Bill No, date, section & sub division carried forward from the previous PO.`,
         );
       }
     } finally {

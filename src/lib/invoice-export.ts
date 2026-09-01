@@ -407,7 +407,6 @@ function buildInvoiceSheet(wb: ExcelJS.Workbook, inv: Invoice, sheetName: string
 export function exportPdf(inv: Invoice) {
   const doc = new jsPDF({ unit: "pt", format: "a4" });
   drawInvoicePage(doc, inv);
-  stampFooters(doc);
   doc.save(`${fileBase(inv)}.pdf`);
 }
 
@@ -418,28 +417,9 @@ export function exportPdfBulk(invoices: Invoice[]) {
     if (i > 0) doc.addPage();
     drawInvoicePage(doc, inv);
   });
-  stampFooters(doc);
   const first = invoices[0];
   const label = first ? `${first.section || "Bulk"}_${invoices.length}_Invoices` : "Bulk_Invoices";
   doc.save(`Tax_Invoices_${label.replace(/[^a-zA-Z0-9_-]/g, "_")}.pdf`);
-}
-
-function stampFooters(doc: jsPDF) {
-  const W = doc.internal.pageSize.getWidth();
-  const H = doc.internal.pageSize.getHeight();
-  const M = 34;
-  const BOTTOM = 70;
-  const LINE: [number, number, number] = [148, 163, 184];
-  const pageCount = doc.getNumberOfPages();
-  for (let p = 1; p <= pageCount; p++) {
-    doc.setPage(p);
-    doc.setDrawColor(...LINE).setLineWidth(0.4);
-    doc.line(M, H - BOTTOM + 12, W - M, H - BOTTOM + 12);
-    doc.setFont("helvetica", "italic").setFontSize(7).setTextColor(120, 120, 120);
-    doc.text("This is a system-generated tax invoice.", M, H - BOTTOM + 24);
-    doc.setFont("helvetica", "normal");
-    doc.text(`Page ${p} of ${pageCount}`, W - M, H - BOTTOM + 24, { align: "right" });
-  }
 }
 
 /** Draws one invoice starting at the current page's top; adds internal pages
@@ -449,8 +429,8 @@ function drawInvoicePage(doc: jsPDF, inv: Invoice) {
   const W = doc.internal.pageSize.getWidth();
   const H = doc.internal.pageSize.getHeight();
   const M = 34;
-  const TOP = 120; // blank space reserved for pre-printed letterhead
-  const BOTTOM = 70; // blank space reserved for footer
+  const TOP = 154.8; // 2.15in — matches the Excel export's letterhead margin
+  const BOTTOM = 154.8;
 
   const INK: [number, number, number] = [17, 24, 39];
   const ACCENT: [number, number, number] = [15, 76, 129];
@@ -539,13 +519,19 @@ function drawInvoicePage(doc: jsPDF, inv: Invoice) {
     head: [["Sr.No", "Description", "Unit", "Qty", "Rate", "Amount (Rs.)"]],
     body: rows,
     styles: {
-      fontSize: 8,
+      fontSize: 9,
       cellPadding: 3,
       lineColor: LINE,
       lineWidth: 0.5,
       textColor: [0, 0, 0],
     },
-    headStyles: { fillColor: ACCENT, textColor: 255, halign: "center", fontStyle: "bold" },
+    headStyles: {
+      fillColor: ACCENT,
+      textColor: 255,
+      halign: "center",
+      fontStyle: "bold",
+      fontSize: 9.5,
+    },
     columnStyles: {
       0: { cellWidth: 42, halign: "center" },
       1: { cellWidth: "auto" },
@@ -594,7 +580,7 @@ function drawInvoicePage(doc: jsPDF, inv: Invoice) {
     } else {
       doc.setFont("helvetica", "normal").setTextColor(0, 0, 0);
     }
-    doc.setFontSize(9);
+    doc.setFontSize(9.5);
     doc.text(label, totalsX + 8, ry + 11);
     doc.text(val, totalsX + totalsW - 8, ry + 11, { align: "right" });
     if (i > 0) doc.line(totalsX, ry, totalsX + totalsW, ry);
@@ -621,8 +607,7 @@ function drawInvoicePage(doc: jsPDF, inv: Invoice) {
     }
   };
 
-  wrap(`Amount in words: ${inv.amountInWords}`, 9, 0, true);
-  wrap(`GST No: ${FIRM.gstin}      PAN No: ${FIRM.pan}`, 9);
+  wrap(`GST No: ${FIRM.gstin}      PAN No: ${FIRM.pan}`, 9.5);
   y += 10;
 
   // ---- Signature block comes right after totals — kept as one unit so it
@@ -635,7 +620,7 @@ function drawInvoicePage(doc: jsPDF, inv: Invoice) {
     .setTextColor(...INK);
   doc.text(`For ${FIRM.name}`, W - M, y, { align: "right" });
   y += 26;
-  doc.setFont("helvetica", "normal").setFontSize(8.5).setTextColor(0, 0, 0);
+  doc.setFont("helvetica", "normal").setFontSize(9.5).setTextColor(0, 0, 0);
   doc.text("Authorised Signatory", W - M, y, { align: "right" });
 
   // ---- 5-6 line gap, then the CERTIFICATE block below the signature -----
@@ -654,6 +639,21 @@ function drawInvoicePage(doc: jsPDF, inv: Invoice) {
   doc.setFillColor(...ACCENT);
   doc.rect(M, y, W - 2 * M, 1.4, "F");
   y += 14;
-  wrap("CERTIFICATE", 10, 0, true);
-  CERTIFICATE_LINES.forEach((line, i) => wrap(`${i + 1})  ${line}`, 8.5, 8));
+  wrap("CERTIFICATE", 10.5, 0, true);
+  const certLine = (num: number, text: string) => {
+    const indent = 14;
+    doc.setFontSize(9).setFont("helvetica", "normal");
+    const lines = doc.splitTextToSize(text, W - M * 2 - indent) as string[];
+    lines.forEach((line, li) => {
+      ensureSpace(9 + 4);
+      if (li === 0) {
+        doc.setFont("helvetica", "bold").setTextColor(0, 0, 0);
+        doc.text(`${num})`, M, y);
+      }
+      doc.setFont("helvetica", "normal").setTextColor(0, 0, 0);
+      doc.text(line, M + indent, y);
+      y += 9 + 4;
+    });
+  };
+  CERTIFICATE_LINES.forEach((line, i) => certLine(i + 1, line));
 }
