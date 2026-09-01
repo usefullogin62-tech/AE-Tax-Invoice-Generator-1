@@ -356,11 +356,7 @@ function buildInvoiceSheet(wb: ExcelJS.Workbook, inv: Invoice, sheetName: string
   });
   r++;
 
-  // ---- Amount in words + GST/PAN ---------------------------------------
-  ws.mergeCells(r, 1, r, 6);
-  ws.getCell(r, 1).value = `Amount in words: ${inv.amountInWords}`;
-  ws.getCell(r, 1).font = { bold: true, size: 9.5 };
-  r++;
+  // ---- GST/PAN ------------------------------------------------------------
   ws.mergeCells(r, 1, r, 6);
   ws.getCell(r, 1).value = `GST No: ${FIRM.gstin}      PAN No: ${FIRM.pan}`;
   ws.getCell(r, 1).font = { size: 9.5 };
