@@ -28,6 +28,7 @@ import {
   computeTotals,
   inr,
   invoiceFromWorkOrder,
+  nextReBillNo,
   type Invoice,
 } from "@/lib/invoice-model";
 import {
@@ -110,8 +111,27 @@ function Index() {
     return sections.size > 1 || divisions.size > 1;
   }, [invoices]);
 
+  /** Editing RE Bill No, RA Bill Date, Section, or Sub Division on any PO in
+   * the batch re-chains every PO after it (RE Bill No auto-increments, the
+   * rest copy forward) — still fully editable afterwards on any tab. */
+  const CASCADE_KEYS = ["reBillNo", "raBillDate", "section", "subDivision"] as const;
   const patch = (p: Partial<Invoice>) =>
-    setInvoices((cur) => cur.map((inv, i) => (i === activeIndex ? { ...inv, ...p } : inv)));
+    setInvoices((cur) => {
+      const next = cur.map((inv, i) => (i === activeIndex ? { ...inv, ...p } : inv));
+      const touched = CASCADE_KEYS.filter((k) => k in p);
+      if (touched.length) {
+        for (let i = activeIndex + 1; i < next.length; i++) {
+          const prev = next[i - 1]!;
+          const updates: Partial<Invoice> = {};
+          if (touched.includes("reBillNo")) updates.reBillNo = nextReBillNo(prev.reBillNo);
+          if (touched.includes("raBillDate")) updates.raBillDate = prev.raBillDate;
+          if (touched.includes("section")) updates.section = prev.section;
+          if (touched.includes("subDivision")) updates.subDivision = prev.subDivision;
+          next[i] = { ...next[i]!, ...updates };
+        }
+      }
+      return next;
+    });
 
   async function handleFiles(files: File[]) {
     if (invoices.length >= MAX_BULK) {

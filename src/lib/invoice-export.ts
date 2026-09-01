@@ -383,13 +383,14 @@ function buildInvoiceSheet(wb: ExcelJS.Workbook, inv: Invoice, sheetName: string
   const certHead = ws.getCell(r, 1);
   certHead.value = "CERTIFICATE";
   certHead.font = { bold: true, size: 10.5, color: { argb: `FF${ACCENT_HEX}` } };
+  certHead.alignment = { horizontal: "center", vertical: "middle" };
   certHead.border = { bottom: { style: "medium", color: { argb: `FF${ACCENT_HEX}` } } };
   r++;
 
   CERTIFICATE_LINES.forEach((line, i) => {
     ws.getCell(r, 1).value = `${i + 1})`;
     ws.getCell(r, 1).font = { bold: true, size: 9 };
-    ws.getCell(r, 1).alignment = { vertical: "top" };
+    ws.getCell(r, 1).alignment = { horizontal: "center", vertical: "top" };
     ws.mergeCells(r, 2, r, 6);
     const c = ws.getCell(r, 2);
     c.value = line;
@@ -639,7 +640,9 @@ function drawInvoicePage(doc: jsPDF, inv: Invoice) {
   doc.setFillColor(...ACCENT);
   doc.rect(M, y, W - 2 * M, 1.4, "F");
   y += 14;
-  wrap("CERTIFICATE", 10.5, 0, true);
+  doc.setFontSize(10.5).setFont("helvetica", "bold").setTextColor(0, 0, 0);
+  doc.text("CERTIFICATE", W / 2, y, { align: "center" });
+  y += 10.5 + 4;
   const certLine = (num: number, text: string) => {
     const indent = 14;
     doc.setFontSize(9).setFont("helvetica", "normal");
@@ -648,7 +651,7 @@ function drawInvoicePage(doc: jsPDF, inv: Invoice) {
       ensureSpace(9 + 4);
       if (li === 0) {
         doc.setFont("helvetica", "bold").setTextColor(0, 0, 0);
-        doc.text(`${num})`, M, y);
+        doc.text(`${num})`, M + indent / 2, y, { align: "center" });
       }
       doc.setFont("helvetica", "normal").setTextColor(0, 0, 0);
       doc.text(line, M + indent, y);
