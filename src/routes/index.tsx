@@ -20,7 +20,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Toaster } from "@/components/ui/sonner";
-import { exportExcel, exportPdf } from "@/lib/invoice-export";
+import { exportExcel, exportExcelBulk, exportPdf, exportPdfBulk } from "@/lib/invoice-export";
 import {
   CERTIFICATE_LINES,
   FIRM,
@@ -86,8 +86,11 @@ function Field({
   );
 }
 
+const MAX_BULK = 10;
+
 function Index() {
-  const [invoice, setInvoice] = useState<Invoice | null>(null);
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [activeIndex, setActiveIndex] = useState(0);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [history, setHistory] = useState<Invoice[]>([]);
@@ -96,24 +99,57 @@ function Index() {
 
   useEffect(() => setHistory(loadHistory()), []);
 
+  const invoice = invoices[activeIndex] ?? null;
   const totals = useMemo(() => (invoice ? computeTotals(invoice) : null), [invoice]);
   const filtered = useMemo(() => searchHistory(history, query), [history, query]);
+  const mixedBatch = useMemo(() => {
+    if (invoices.length < 2) return false;
+    const sections = new Set(invoices.map((i) => i.section));
+    const divisions = new Set(invoices.map((i) => i.division));
+    return sections.size > 1 || divisions.size > 1;
+  }, [invoices]);
 
-  const patch = (p: Partial<Invoice>) => setInvoice((cur) => (cur ? { ...cur, ...p } : cur));
+  const patch = (p: Partial<Invoice>) =>
+    setInvoices((cur) => cur.map((inv, i) => (i === activeIndex ? { ...inv, ...p } : inv)));
 
-  async function handleFile(file: File) {
+  async function handleFiles(files: File[]) {
+    if (invoices.length >= MAX_BULK) {
+      toast.error(`You can batch a maximum of ${MAX_BULK} POs at a time.`);
+      return;
+    }
+    const room = MAX_BULK - invoices.length;
+    const toParse = files.slice(0, room);
+    if (files.length > room) {
+      toast.error(`Only added ${room} of ${files.length} files — ${MAX_BULK} PO limit per batch.`);
+    }
     setBusy(true);
     try {
-      const chunks = await extractPdfChunks(await file.arrayBuffer());
-      const parsed = parseWorkOrder(chunks);
-      setWarnings(parsed.warnings);
-      setInvoice(invoiceFromWorkOrder(parsed));
-      toast.success(
-        `Parsed ${parsed.materials.length} material and ${parsed.services.length} service line items.`,
-      );
-    } catch (err) {
-      console.error(err);
-      toast.error("Could not read this PDF. Make sure it is a text-based MSEDCL work order.");
+      const parsedInvoices: Invoice[] = [];
+      const allWarnings: string[] = [];
+      for (const file of toParse) {
+        try {
+          const chunks = await extractPdfChunks(await file.arrayBuffer());
+          const parsed = parseWorkOrder(chunks);
+          if (parsed.warnings.length)
+            allWarnings.push(...parsed.warnings.map((w) => `${file.name}: ${w}`));
+          parsedInvoices.push(invoiceFromWorkOrder(parsed));
+        } catch (err) {
+          console.error(err);
+          toast.error(
+            `Could not read "${file.name}" — make sure it's a text-based MSEDCL work order.`,
+          );
+        }
+      }
+      if (parsedInvoices.length) {
+        setInvoices((cur) => [...cur, ...parsedInvoices]);
+        setActiveIndex(invoices.length); // jump to first newly added
+        setWarnings(allWarnings);
+        toast.success(
+          parsedInvoices.length === 1
+            ? `Parsed ${parsedInvoices[0]!.materials.length} material and ${parsedInvoices[0]!.services.length} service line items.`
+            : `Parsed ${parsedInvoices.length} POs.`,
+        );
+      }
     } finally {
       setBusy(false);
     }
@@ -125,9 +161,7 @@ function Index() {
       <header className="border-b border-border bg-card">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-6 py-5">
           <div>
-            <h1 className="text-xl font-semibold tracking-tight">
-              MSEDCL Tax Invoice Generator
-            </h1>
+            <h1 className="text-xl font-semibold tracking-tight">MSEDCL Tax Invoice Generator</h1>
             <p className="text-sm text-muted-foreground">
               {FIRM.name} · GSTIN {FIRM.gstin} · PAN {FIRM.pan}
             </p>
@@ -137,16 +171,17 @@ function Index() {
               ref={fileRef}
               type="file"
               accept="application/pdf"
+              multiple
               className="hidden"
               onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) void handleFile(f);
+                const files = Array.from(e.target.files ?? []);
+                if (files.length) void handleFiles(files);
                 e.target.value = "";
               }}
             />
             <Button onClick={() => fileRef.current?.click()} disabled={busy}>
               {busy ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />}
-              Upload work order PDF
+              Upload PO PDF{invoices.length > 0 ? "s" : ""} ({invoices.length}/{MAX_BULK})
             </Button>
           </div>
         </div>
@@ -158,13 +193,62 @@ function Index() {
             <FileText className="mx-auto size-10 text-muted-foreground" />
             <h2 className="mt-4 text-lg font-medium">Start with a work order</h2>
             <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
-              Upload a text-based MSEDCL PO PDF. Material and service line items, work order
-              metadata, transportation/insurance charges and ERP totals are parsed automatically —
-              everything stays in your browser.
+              Upload up to {MAX_BULK} text-based MSEDCL PO PDFs from the same section &amp; division
+              at once. Material and service line items, work order metadata, transportation/
+              insurance charges and ERP totals are parsed automatically — everything stays in your
+              browser.
             </p>
             <Button className="mt-5" onClick={() => fileRef.current?.click()} disabled={busy}>
-              <Upload className="size-4" /> Choose PDF
+              <Upload className="size-4" /> Choose PDF(s)
             </Button>
+          </section>
+        )}
+
+        {invoices.length > 1 && (
+          <section className="rounded-xl border border-border bg-card p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap gap-1.5">
+                {invoices.map((inv, i) => (
+                  <button
+                    key={inv.id}
+                    onClick={() => setActiveIndex(i)}
+                    className={`rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
+                      i === activeIndex
+                        ? "border-primary bg-primary/10 text-primary"
+                        : "border-border text-muted-foreground hover:bg-muted"
+                    }`}
+                  >
+                    PO {i + 1} · {inv.reBillNo || inv.workOrderNo || "untitled"}
+                    <span
+                      role="button"
+                      className="ml-2 text-muted-foreground/70 hover:text-destructive"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setInvoices((cur) => cur.filter((_, idx) => idx !== i));
+                        setActiveIndex((cur) => Math.max(0, cur >= i ? cur - 1 : cur));
+                      }}
+                    >
+                      ✕
+                    </span>
+                  </button>
+                ))}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" onClick={() => void exportExcelBulk(invoices)}>
+                  <FileSpreadsheet className="size-4" /> Export all → Excel ({invoices.length}{" "}
+                  sheets)
+                </Button>
+                <Button size="sm" variant="secondary" onClick={() => exportPdfBulk(invoices)}>
+                  <Download className="size-4" /> Export all → PDF (merged)
+                </Button>
+              </div>
+            </div>
+            {mixedBatch && (
+              <p className="mt-3 flex items-center gap-2 text-xs text-destructive">
+                <AlertTriangle className="size-3.5" /> These POs are not all from the same section
+                &amp; division — double check before batch-exporting.
+              </p>
+            )}
           </section>
         )}
 
@@ -214,9 +298,21 @@ function Index() {
                   value={invoice.workOrderDate}
                   onChange={(v) => patch({ workOrderDate: v })}
                 />
-                <Field label="LOE / Award No" value={invoice.loeNo} onChange={(v) => patch({ loeNo: v })} />
-                <Field label="LOE Date" value={invoice.loeDate} onChange={(v) => patch({ loeDate: v })} />
-                <Field label="Section" value={invoice.section} onChange={(v) => patch({ section: v })} />
+                <Field
+                  label="LOE / Award No"
+                  value={invoice.loeNo}
+                  onChange={(v) => patch({ loeNo: v })}
+                />
+                <Field
+                  label="LOE Date"
+                  value={invoice.loeDate}
+                  onChange={(v) => patch({ loeDate: v })}
+                />
+                <Field
+                  label="Section"
+                  value={invoice.section}
+                  onChange={(v) => patch({ section: v })}
+                />
                 <Field
                   label="Sub division"
                   value={invoice.subDivision}
@@ -232,7 +328,12 @@ function Index() {
                     label={`MO numbers (${invoice.moNos.length})`}
                     value={invoice.moNos.join(", ")}
                     onChange={(v) =>
-                      patch({ moNos: v.split(",").map((s) => s.trim()).filter(Boolean) })
+                      patch({
+                        moNos: v
+                          .split(",")
+                          .map((s) => s.trim())
+                          .filter(Boolean),
+                      })
                     }
                   />
                 </div>
@@ -289,8 +390,14 @@ function Index() {
 
               <div className="space-y-2 rounded-lg bg-muted/60 p-4 text-sm">
                 <Row label="Material total" value={totals.materialTotal} />
-                <Row label={`Transportation @ ${invoice.transportPct}%`} value={invoice.transportAmount} />
-                <Row label={`Insurance @ ${invoice.insurancePct}%`} value={invoice.insuranceAmount} />
+                <Row
+                  label={`Transportation @ ${invoice.transportPct}%`}
+                  value={invoice.transportAmount}
+                />
+                <Row
+                  label={`Insurance @ ${invoice.insurancePct}%`}
+                  value={invoice.insuranceAmount}
+                />
                 <Row label="Service total" value={totals.serviceTotal} />
                 <Row label={`Rate quoted ${invoice.ratePct}% Above`} value={invoice.rateAmount} />
                 <Separator />
@@ -365,7 +472,12 @@ function Index() {
                     size="sm"
                     variant="outline"
                     onClick={() => {
-                      setInvoice(structuredClone(h));
+                      if (invoices.length >= MAX_BULK) {
+                        toast.error(`You can batch a maximum of ${MAX_BULK} POs at a time.`);
+                        return;
+                      }
+                      setInvoices((cur) => [...cur, structuredClone(h)]);
+                      setActiveIndex(invoices.length);
                       setWarnings([]);
                       window.scrollTo({ top: 0, behavior: "smooth" });
                     }}

@@ -18,7 +18,14 @@ interface Row {
 
 function bodyRows(inv: Invoice): Row[] {
   const rows: Row[] = [];
-  rows.push({ sr: "Material Supplied by Agency", desc: "", unit: "", qty: "", rate: "", amount: "" });
+  rows.push({
+    sr: "Material Supplied by Agency",
+    desc: "",
+    unit: "",
+    qty: "",
+    rate: "",
+    amount: "",
+  });
   inv.materials.forEach((m, i) =>
     rows.push({
       sr: i + 1,
@@ -45,7 +52,14 @@ function bodyRows(inv: Invoice): Row[] {
     rate: "",
     amount: inv.insuranceAmount,
   });
-  rows.push({ sr: "Services Supplied by Agency", desc: "", unit: "", qty: "", rate: "", amount: "" });
+  rows.push({
+    sr: "Services Supplied by Agency",
+    desc: "",
+    unit: "",
+    qty: "",
+    rate: "",
+    amount: "",
+  });
   inv.services.forEach((s, i) =>
     rows.push({
       sr: i + 1,
@@ -112,11 +126,45 @@ function styleRange(
 }
 
 export async function exportExcel(inv: Invoice) {
-  const t = computeTotals(inv);
   const wb = new ExcelJS.Workbook();
   wb.creator = FIRM.name;
   wb.created = new Date();
-  const ws = wb.addWorksheet(inv.workOrderNo || "Tax Invoice", {
+  buildInvoiceSheet(wb, inv, inv.workOrderNo || "Tax Invoice");
+  const buf = await wb.xlsx.writeBuffer();
+  downloadBlob(
+    new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
+    `${fileBase(inv)}.xlsx`,
+  );
+}
+
+/** Bulk export: one workbook, one sheet per invoice (max 10 POs at a time). */
+export async function exportExcelBulk(invoices: Invoice[]) {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = FIRM.name;
+  wb.created = new Date();
+  const usedNames = new Set<string>();
+  invoices.forEach((inv, i) => {
+    let name =
+      (inv.reBillNo ? `RE ${inv.reBillNo}` : inv.workOrderNo || `Invoice ${i + 1}`)
+        .replace(/[\\/*?:[\]]/g, "-")
+        .slice(0, 28)
+        .trim() || `Invoice ${i + 1}`;
+    while (usedNames.has(name)) name = `${name.slice(0, 25)} (${i + 1})`;
+    usedNames.add(name);
+    buildInvoiceSheet(wb, inv, name);
+  });
+  const buf = await wb.xlsx.writeBuffer();
+  const first = invoices[0];
+  const label = first ? `${first.section || "Bulk"}_${invoices.length}_Invoices` : "Bulk_Invoices";
+  downloadBlob(
+    new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
+    `Tax_Invoices_${label.replace(/[^a-zA-Z0-9_-]/g, "_")}.xlsx`,
+  );
+}
+
+function buildInvoiceSheet(wb: ExcelJS.Workbook, inv: Invoice, sheetName: string) {
+  const t = computeTotals(inv);
+  const ws = wb.addWorksheet(sheetName, {
     pageSetup: {
       paperSize: 9, // A4
       orientation: "portrait",
@@ -292,7 +340,8 @@ export async function exportExcel(inv: Invoice) {
     amt.alignment = { horizontal: "right", vertical: "middle" };
     styleRange(ws, r, 1, r, 6, (cell) => {
       cell.border = { ...boxBorder };
-      if (isGrand) cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: `FF${ACCENT_HEX}` } };
+      if (isGrand)
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: `FF${ACCENT_HEX}` } };
     });
     r++;
   });
@@ -346,19 +395,52 @@ export async function exportExcel(inv: Invoice) {
   });
 
   ws.pageSetup.printArea = `A1:F${r}`;
-
-  const buf = await wb.xlsx.writeBuffer();
-  downloadBlob(
-    new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
-    `${fileBase(inv)}.xlsx`,
-  );
 }
 
 /* -------------------------------- PDF --------------------------------- */
 
 export function exportPdf(inv: Invoice) {
-  const t = computeTotals(inv);
   const doc = new jsPDF({ unit: "pt", format: "a4" });
+  drawInvoicePage(doc, inv);
+  stampFooters(doc);
+  doc.save(`${fileBase(inv)}.pdf`);
+}
+
+/** Bulk export: one merged PDF, each invoice starting on its own page (max 10 POs at a time). */
+export function exportPdfBulk(invoices: Invoice[]) {
+  const doc = new jsPDF({ unit: "pt", format: "a4" });
+  invoices.forEach((inv, i) => {
+    if (i > 0) doc.addPage();
+    drawInvoicePage(doc, inv);
+  });
+  stampFooters(doc);
+  const first = invoices[0];
+  const label = first ? `${first.section || "Bulk"}_${invoices.length}_Invoices` : "Bulk_Invoices";
+  doc.save(`Tax_Invoices_${label.replace(/[^a-zA-Z0-9_-]/g, "_")}.pdf`);
+}
+
+function stampFooters(doc: jsPDF) {
+  const W = doc.internal.pageSize.getWidth();
+  const H = doc.internal.pageSize.getHeight();
+  const M = 34;
+  const BOTTOM = 70;
+  const LINE: [number, number, number] = [148, 163, 184];
+  const pageCount = doc.getNumberOfPages();
+  for (let p = 1; p <= pageCount; p++) {
+    doc.setPage(p);
+    doc.setDrawColor(...LINE).setLineWidth(0.4);
+    doc.line(M, H - BOTTOM + 12, W - M, H - BOTTOM + 12);
+    doc.setFont("helvetica", "italic").setFontSize(7).setTextColor(120, 120, 120);
+    doc.text("This is a system-generated tax invoice.", M, H - BOTTOM + 24);
+    doc.setFont("helvetica", "normal");
+    doc.text(`Page ${p} of ${pageCount}`, W - M, H - BOTTOM + 24, { align: "right" });
+  }
+}
+
+/** Draws one invoice starting at the current page's top; adds internal pages
+ * of its own (via ensureSpace) if a single invoice overflows one page. */
+function drawInvoicePage(doc: jsPDF, inv: Invoice) {
+  const t = computeTotals(inv);
   const W = doc.internal.pageSize.getWidth();
   const H = doc.internal.pageSize.getHeight();
   const M = 34;
@@ -374,11 +456,17 @@ export function exportPdf(inv: Invoice) {
   let y = TOP;
 
   // ---- Title + invoice ref tag -----------------------------------------
-  doc.setFont("helvetica", "bold").setFontSize(16).setTextColor(...INK);
+  doc
+    .setFont("helvetica", "bold")
+    .setFontSize(16)
+    .setTextColor(...INK);
   doc.text("TAX INVOICE", W / 2, y, { align: "center" });
   doc.setFillColor(...ACCENT);
   doc.rect(W / 2 - 50, y + 5, 100, 2.4, "F");
-  doc.setFont("helvetica", "normal").setFontSize(8).setTextColor(...LINE);
+  doc
+    .setFont("helvetica", "normal")
+    .setFontSize(8)
+    .setTextColor(...LINE);
   doc.text(`WO No. ${inv.workOrderNo || "-"}`, W - M, y - 4, { align: "right" });
   y += 24;
 
@@ -402,7 +490,10 @@ export function exportPdf(inv: Invoice) {
   const drawPair = (x: number, align: "left" | "right", pairs: [string, string][]) => {
     pairs.forEach(([label, value], i) => {
       const ry = boxTop + 12 + i * rowH;
-      doc.setFont("helvetica", "bold").setFontSize(9).setTextColor(...INK);
+      doc
+        .setFont("helvetica", "bold")
+        .setFontSize(9)
+        .setTextColor(...INK);
       if (align === "left") {
         doc.text(label, x, ry);
         doc.setFont("helvetica", "normal").setTextColor(30, 30, 30);
@@ -513,7 +604,10 @@ export function exportPdf(inv: Invoice) {
     }
   };
   const wrap = (text: string, size = 8.5, indent = 0, bold = false) => {
-    doc.setFontSize(size).setFont("helvetica", bold ? "bold" : "normal").setTextColor(0, 0, 0);
+    doc
+      .setFontSize(size)
+      .setFont("helvetica", bold ? "bold" : "normal")
+      .setTextColor(0, 0, 0);
     const lines = doc.splitTextToSize(text, W - M * 2 - indent) as string[];
     for (const line of lines) {
       ensureSpace(size + 4);
@@ -530,7 +624,10 @@ export function exportPdf(inv: Invoice) {
   // can never be orphaned onto its own page. -----------------------------
   const SIGNATURE_BLOCK_H = 46;
   ensureSpace(SIGNATURE_BLOCK_H);
-  doc.setFont("helvetica", "bold").setFontSize(9.5).setTextColor(...INK);
+  doc
+    .setFont("helvetica", "bold")
+    .setFontSize(9.5)
+    .setTextColor(...INK);
   doc.text(`For ${FIRM.name}`, W - M, y, { align: "right" });
   y += 26;
   doc.setFont("helvetica", "normal").setFontSize(8.5).setTextColor(0, 0, 0);
@@ -554,18 +651,4 @@ export function exportPdf(inv: Invoice) {
   y += 14;
   wrap("CERTIFICATE", 10, 0, true);
   CERTIFICATE_LINES.forEach((line, i) => wrap(`${i + 1})  ${line}`, 8.5, 8));
-
-  // ---- Footer: disclaimer + page numbers on every page ------------------
-  const pageCount = doc.getNumberOfPages();
-  for (let p = 1; p <= pageCount; p++) {
-    doc.setPage(p);
-    doc.setDrawColor(...LINE).setLineWidth(0.4);
-    doc.line(M, H - BOTTOM + 12, W - M, H - BOTTOM + 12);
-    doc.setFont("helvetica", "italic").setFontSize(7).setTextColor(120, 120, 120);
-    doc.text("This is a system-generated tax invoice.", M, H - BOTTOM + 24);
-    doc.setFont("helvetica", "normal");
-    doc.text(`Page ${p} of ${pageCount}`, W - M, H - BOTTOM + 24, { align: "right" });
-  }
-
-  doc.save(`${fileBase(inv)}.pdf`);
 }
