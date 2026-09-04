@@ -405,9 +405,36 @@ function buildInvoiceSheet(wb: ExcelJS.Workbook, inv: Invoice, sheetName: string
 
 /* -------------------------------- PDF --------------------------------- */
 
+const TABLE_DENSITY = [
+  { fontSize: 9, headSize: 9.5, pad: 3 },
+  { fontSize: 8.5, headSize: 9, pad: 2.5 },
+  { fontSize: 8, headSize: 8.5, pad: 2 },
+  { fontSize: 7.5, headSize: 8, pad: 1.5 },
+] as const;
+
+/** Tries the table at normal size first; if the certificate would otherwise
+ * be forced onto (or split across) a fresh, wasted letterhead sheet, it
+ * retries progressively tighter row heights/font sizes — on a throwaway
+ * scratch document first, so the real one only gets drawn once, at the
+ * loosest density that actually avoids the problem. */
+function renderInvoiceBestEffort(doc: jsPDF, inv: Invoice) {
+  const startPage = doc.getNumberOfPages();
+  let chosen: (typeof TABLE_DENSITY)[number] = TABLE_DENSITY[TABLE_DENSITY.length - 1]!;
+  for (const density of TABLE_DENSITY) {
+    const scratch = new jsPDF({ unit: "pt", format: "a4" });
+    for (let i = 1; i < startPage; i++) scratch.addPage();
+    const result = drawInvoicePage(scratch, inv, density);
+    if (result.certOk) {
+      chosen = density;
+      break;
+    }
+  }
+  return drawInvoicePage(doc, inv, chosen);
+}
+
 export function exportPdf(inv: Invoice) {
   const doc = new jsPDF({ unit: "pt", format: "a4" });
-  drawInvoicePage(doc, inv);
+  renderInvoiceBestEffort(doc, inv);
   doc.save(`${fileBase(inv)}.pdf`);
 }
 
@@ -416,7 +443,7 @@ export function exportPdfBulk(invoices: Invoice[]) {
   const doc = new jsPDF({ unit: "pt", format: "a4" });
   invoices.forEach((inv, i) => {
     if (i > 0) doc.addPage();
-    drawInvoicePage(doc, inv);
+    renderInvoiceBestEffort(doc, inv);
   });
   const first = invoices[0];
   const label = first ? `${first.section || "Bulk"}_${invoices.length}_Invoices` : "Bulk_Invoices";
@@ -424,8 +451,14 @@ export function exportPdfBulk(invoices: Invoice[]) {
 }
 
 /** Draws one invoice starting at the current page's top; adds internal pages
- * of its own (via ensureSpace) if a single invoice overflows one page. */
-function drawInvoicePage(doc: jsPDF, inv: Invoice) {
+ * of its own (via ensureSpace) if a single invoice overflows one page.
+ * Returns whether the certificate landed cleanly (never split, never alone
+ * on a fresh front-of-sheet page) at this density. */
+function drawInvoicePage(
+  doc: jsPDF,
+  inv: Invoice,
+  density: (typeof TABLE_DENSITY)[number] = TABLE_DENSITY[0],
+): { certOk: boolean } {
   const t = computeTotals(inv);
   const W = doc.internal.pageSize.getWidth();
   const H = doc.internal.pageSize.getHeight();
@@ -529,8 +562,8 @@ function drawInvoicePage(doc: jsPDF, inv: Invoice) {
     head: [["Sr.No", "Description", "Unit", "Qty", "Rate", "Amount (Rs.)"]],
     body: rows,
     styles: {
-      fontSize: 9,
-      cellPadding: 3,
+      fontSize: density.fontSize,
+      cellPadding: density.pad,
       lineColor: LINE,
       lineWidth: 0.5,
       textColor: [0, 0, 0],
@@ -540,7 +573,7 @@ function drawInvoicePage(doc: jsPDF, inv: Invoice) {
       textColor: 255,
       halign: "center",
       fontStyle: "bold",
-      fontSize: 9.5,
+      fontSize: density.headSize,
     },
     columnStyles: {
       0: { cellWidth: 42, halign: "center" },
@@ -660,9 +693,13 @@ function drawInvoicePage(doc: jsPDF, inv: Invoice) {
       }
     }
   }
-  // Fallback: neither worked (rare) — use the smallest tier and let the
-  // normal ensureSpace() page-break flow handle it as a last resort.
-  if (tailStartsNewPage) {
+  // Last resort: neither the current page nor the allowed next page had
+  // room even at the tightest tier. Force the WHOLE tail onto a fresh page
+  // together — never let it split, even if that page is a fresh sheet.
+  if (!placed) {
+    doc.addPage();
+    y = topFor(doc.getNumberOfPages());
+  } else if (tailStartsNewPage) {
     doc.addPage();
     y = topFor(doc.getNumberOfPages());
   }
@@ -730,4 +767,6 @@ function drawInvoicePage(doc: jsPDF, inv: Invoice) {
     });
   };
   CERTIFICATE_LINES.forEach((line, i) => certLine(i + 1, line));
+
+  return { certOk: placed };
 }
