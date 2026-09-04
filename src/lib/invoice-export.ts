@@ -71,7 +71,7 @@ function bodyRows(inv: Invoice): Row[] {
     }),
   );
   rows.push({
-    sr: `Rate quoted by Agency ${inv.ratePct}% Above`,
+    sr: `Rate quoted by Agency ${Math.abs(inv.ratePct)}% ${inv.ratePct < 0 ? "Below" : "Above"}`,
     desc: "",
     unit: "",
     qty: "",
@@ -281,15 +281,6 @@ function buildInvoiceSheet(wb: ExcelJS.Workbook, inv: Invoice, sheetName: string
   ws.views = [{ state: "frozen", ySplit: headerRow }];
   r++;
 
-  // Compress the item-row font/height as the item count grows, so a long
-  // PO's table doesn't push the CERTIFICATE block onto a 3rd printed page
-  // (each new page would need fresh letterhead stationery, which is not
-  // allowed just for the certificate).
-  const totalItemRows = inv.materials.length + inv.services.length;
-  const rowScale = totalItemRows <= 25 ? 1 : totalItemRows <= 40 ? 0.9 : totalItemRows <= 55 ? 0.82 : 0.75;
-  const itemFontSize = Math.max(9 * rowScale, 7);
-  const itemRowH = Math.max(15 * rowScale, 11);
-
   let zebraIdx = 0;
   for (const row of bodyRows(inv)) {
     if (isSectionRow(row)) {
@@ -297,19 +288,18 @@ function buildInvoiceSheet(wb: ExcelJS.Workbook, inv: Invoice, sheetName: string
       ws.mergeCells(r, 1, r, hasAmount ? 5 : 6);
       const c = ws.getCell(r, 1);
       c.value = String(row.sr);
-      c.font = { bold: true, size: itemFontSize, color: { argb: `FF${ACCENT_HEX}` } };
+      c.font = { bold: true, size: 9, color: { argb: `FF${ACCENT_HEX}` } };
       c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: `FF${BAND_HEX}` } };
       c.alignment = { vertical: "middle" };
       if (hasAmount) {
         const amt = ws.getCell(r, 6);
         amt.value = Number(row.amount);
         amt.numFmt = "#,##0.00";
-        amt.font = { bold: true, size: itemFontSize };
+        amt.font = { bold: true, size: 9 };
         amt.fill = { type: "pattern", pattern: "solid", fgColor: { argb: `FF${BAND_HEX}` } };
         amt.alignment = { horizontal: "right", vertical: "middle" };
       }
       styleRange(ws, r, 1, r, 6, (cell) => (cell.border = { ...boxBorder }));
-      ws.getRow(r).height = itemRowH;
     } else {
       const vals = [
         row.sr,
@@ -322,7 +312,7 @@ function buildInvoiceSheet(wb: ExcelJS.Workbook, inv: Invoice, sheetName: string
       vals.forEach((v, i) => {
         const c = ws.getCell(r, i + 1);
         c.value = v as string | number;
-        c.font = { size: itemFontSize };
+        c.font = { size: 9 };
         c.border = { ...boxBorder };
         c.alignment = {
           horizontal: colAlign(i),
@@ -334,7 +324,6 @@ function buildInvoiceSheet(wb: ExcelJS.Workbook, inv: Invoice, sheetName: string
           c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: `FF${ZEBRA_HEX}` } };
         }
       });
-      ws.getRow(r).height = itemRowH;
       zebraIdx++;
     }
     r++;
@@ -373,36 +362,29 @@ function buildInvoiceSheet(wb: ExcelJS.Workbook, inv: Invoice, sheetName: string
   ws.getCell(r, 1).font = { size: 9.5 };
   r += 2;
 
-  // ---- Signature block (comes right after totals, as per format). Font
-  // fixed at 12, centered within its own merged cell, anchored bottom-right
-  // of the block. ----------------------------------------------------------
-  r += 3;
+  // ---- Signature block (comes right after totals, as per format) -------
   ws.mergeCells(r, 5, r, 6);
   const forFirm = ws.getCell(r, 5);
   forFirm.value = `For ${FIRM.name}`;
   forFirm.font = { bold: true, size: 12 };
-  forFirm.alignment = { horizontal: "center", vertical: "middle" };
+  forFirm.alignment = { horizontal: "center" };
   r += 3;
   ws.mergeCells(r, 5, r, 6);
   const sig = ws.getCell(r, 5);
   sig.value = "Authorised Signatory";
   sig.font = { size: 12 };
-  sig.alignment = { horizontal: "center", vertical: "middle" };
+  sig.alignment = { horizontal: "center" };
   r++;
 
-  // ---- Gap, then CERTIFICATE below the signature. Larger, centered
-  // heading; larger body text — this block's size is fixed, never shrunk,
-  // so it always reads clearly regardless of how the table above was
-  // compressed to make room for it. ----------------------------------------
+  // ---- 5-6 line gap, then CERTIFICATE below the signature ---------------
   r += 6;
 
   ws.mergeCells(r, 1, r, 6);
   const certHead = ws.getCell(r, 1);
   certHead.value = "CERTIFICATE";
-  certHead.font = { bold: true, size: 12, color: { argb: `FF${ACCENT_HEX}` } };
+  certHead.font = { bold: true, size: 12.5, color: { argb: `FF${ACCENT_HEX}` } };
   certHead.alignment = { horizontal: "center", vertical: "middle" };
   certHead.border = { bottom: { style: "medium", color: { argb: `FF${ACCENT_HEX}` } } };
-  ws.getRow(r).height = 20;
   r++;
 
   CERTIFICATE_LINES.forEach((line, i) => {
@@ -422,79 +404,19 @@ function buildInvoiceSheet(wb: ExcelJS.Workbook, inv: Invoice, sheetName: string
 }
 
 /* -------------------------------- PDF --------------------------------- */
-/*
- * Print-back-to-back strategy: pages are printed double-sided onto
- * pre-printed letterhead stationery. Physical sheet 1's FRONT is PDF
- * page 1 (needs the reserved letterhead top/bottom band); sheet 1's
- * BACK is PDF page 2 (plain paper visually, so it can use the full
- * page — no reserved band, saves space); sheet 2's FRONT is PDF page
- * 3 (letterhead band again); and so on. So ODD pages get the wide
- * letterhead margins, EVEN pages get slim margins.
- *
- * Certificate placement rule: the certificate block must never be the
- * reason a 3rd physical sheet (page 3) is needed. If normal-size
- * content would spill past 2 pages, the table/spacing is compressed
- * (smaller table font/padding/gaps) — tried at decreasing scales —
- * until everything (including the certificate) fits within 2 pages.
- * Signature and certificate text sizes are fixed, not shrunk.
- */
-
-const LETTERHEAD_MARGIN = 154.8; // 2.15in
-const PLAIN_MARGIN = 30; // slim margin for the back-of-sheet page
-
-function marginFor(pageInInvoice: number) {
-  const isOdd = pageInInvoice % 2 === 1;
-  return isOdd
-    ? { top: LETTERHEAD_MARGIN, bottom: LETTERHEAD_MARGIN }
-    : { top: PLAIN_MARGIN, bottom: PLAIN_MARGIN };
-}
-
-/** Renders one invoice at a given compression scale into a fresh doc, just
- * to measure how many pages it takes — used to pick the smallest scale
- * (closest to 1 = least compressed) that still fits in 2 pages. */
-function pagesNeededAtScale(inv: Invoice, scale: number): number {
-  const probe = new jsPDF({ unit: "pt", format: "a4" });
-  drawInvoicePage(probe, inv, scale);
-  return probe.getNumberOfPages();
-}
-
-function bestScaleFor(inv: Invoice): number {
-  const candidates = [1, 0.92, 0.85, 0.78, 0.72, 0.66];
-  for (const s of candidates) {
-    if (pagesNeededAtScale(inv, s) <= 2) return s;
-  }
-  return candidates.at(-1) ?? 0.66;
-}
 
 export function exportPdf(inv: Invoice) {
-  const scale = bestScaleFor(inv);
   const doc = new jsPDF({ unit: "pt", format: "a4" });
-  drawInvoicePage(doc, inv, scale);
+  drawInvoicePage(doc, inv);
   doc.save(`${fileBase(inv)}.pdf`);
 }
 
-/** Moves the cursor so the next invoice starts on an ODD (letterhead) page —
- * inserting one blank back-of-sheet page first if needed — then returns the
- * new total page count. */
-function advanceToOddStart(doc: jsPDF, currentPages: number): number {
-  if (currentPages % 2 === 0) {
-    doc.addPage();
-    return currentPages + 1;
-  }
-  doc.addPage(); // blank filler: unused back of the previous letterhead sheet
-  doc.addPage(); // fresh odd page to draw the next invoice on
-  return currentPages + 2;
-}
-
-/** Bulk export: one merged PDF; every invoice starts fresh on an odd
- * (letterhead) page so its own front page always lands on new stationery
- * (max 10 POs at a time). */
+/** Bulk export: one merged PDF, each invoice starting on its own page (max 10 POs at a time). */
 export function exportPdfBulk(invoices: Invoice[]) {
   const doc = new jsPDF({ unit: "pt", format: "a4" });
   invoices.forEach((inv, i) => {
-    if (i > 0) advanceToOddStart(doc, doc.getNumberOfPages());
-    const scale = bestScaleFor(inv);
-    drawInvoicePage(doc, inv, scale);
+    if (i > 0) doc.addPage();
+    drawInvoicePage(doc, inv);
   });
   const first = invoices[0];
   const label = first ? `${first.section || "Bulk"}_${invoices.length}_Invoices` : "Bulk_Invoices";
@@ -502,17 +424,23 @@ export function exportPdfBulk(invoices: Invoice[]) {
 }
 
 /** Draws one invoice starting at the current page's top; adds internal pages
- * of its own (via ensureSpace) if a single invoice overflows one page.
- * `scale` compresses only the line-item table + inter-block spacing —
- * signature and certificate text stay fixed size. */
-function drawInvoicePage(doc: jsPDF, inv: Invoice, scale = 1) {
+ * of its own (via ensureSpace) if a single invoice overflows one page. */
+function drawInvoicePage(doc: jsPDF, inv: Invoice) {
   const t = computeTotals(inv);
   const W = doc.internal.pageSize.getWidth();
   const H = doc.internal.pageSize.getHeight();
   const M = 34;
-  let pageInInvoice = 1;
-  let { top: TOP, bottom: BOTTOM } = marginFor(pageInInvoice);
-  const sc = (v: number) => v * scale;
+  // Duplex-aware margins: ODD absolute pages are the FRONT of a pre-printed
+  // letterhead sheet (needs the 2.15in blank band top & bottom); EVEN pages
+  // are the BLANK BACK of that same sheet — using a small margin there packs
+  // more onto the page instead of wasting a fresh letterhead sheet.
+  const FRONT_MARGIN = 154.8; // 2.15in — matches the Excel export
+  const BACK_MARGIN = 36;
+  const topFor = (pageNum: number) => (pageNum % 2 === 1 ? FRONT_MARGIN : BACK_MARGIN);
+  const bottomFor = (pageNum: number) => (pageNum % 2 === 1 ? FRONT_MARGIN : BACK_MARGIN);
+  const startPage = doc.getNumberOfPages();
+  const TOP = topFor(startPage);
+  const BOTTOM = bottomFor(startPage);
 
   const INK: [number, number, number] = [17, 24, 39];
   const ACCENT: [number, number, number] = [15, 76, 129];
@@ -596,15 +524,13 @@ function drawInvoicePage(doc: jsPDF, inv: Invoice, scale = 1) {
         ],
   );
 
-  const pagesBeforeTable = doc.getNumberOfPages();
-  const pageInInvoiceAtTableStart = pageInInvoice;
   autoTable(doc, {
     startY: y,
     head: [["Sr.No", "Description", "Unit", "Qty", "Rate", "Amount (Rs.)"]],
     body: rows,
     styles: {
-      fontSize: Math.max(sc(9), 6.5),
-      cellPadding: Math.max(sc(3), 1.4),
+      fontSize: 9,
+      cellPadding: 3,
       lineColor: LINE,
       lineWidth: 0.5,
       textColor: [0, 0, 0],
@@ -614,7 +540,7 @@ function drawInvoicePage(doc: jsPDF, inv: Invoice, scale = 1) {
       textColor: 255,
       halign: "center",
       fontStyle: "bold",
-      fontSize: Math.max(sc(9.5), 7),
+      fontSize: 9.5,
     },
     columnStyles: {
       0: { cellWidth: 42, halign: "center" },
@@ -625,6 +551,13 @@ function drawInvoicePage(doc: jsPDF, inv: Invoice, scale = 1) {
       5: { cellWidth: 72, halign: "right" },
     },
     margin: { left: M, right: M, top: TOP, bottom: BOTTOM },
+    didDrawPage: (data) => {
+      // Page just finished is (startPage + data.pageNumber - 1) in absolute
+      // terms; set the margin for the NEXT page before autoTable lays it out.
+      const nextAbsolutePage = startPage + data.pageNumber;
+      data.settings.margin.top = topFor(nextAbsolutePage);
+      data.settings.margin.bottom = bottomFor(nextAbsolutePage);
+    },
     didParseCell: (data) => {
       const raw = data.row.raw as string[];
       const isBanner = data.section === "body" && raw[1] === "" && raw[2] === "";
@@ -638,22 +571,6 @@ function drawInvoicePage(doc: jsPDF, inv: Invoice, scale = 1) {
       } else if (data.section === "body" && data.row.index % 2 === 1) {
         data.cell.styles.fillColor = ZEBRA;
       }
-    },
-    didDrawPage: (data) => {
-      // autoTable's own internal page breaks also flip between the wide
-      // letterhead margin and the slim back-of-sheet margin. Derive the
-      // relative page number from the doc's absolute page count so this
-      // stays correct even though didDrawPage also fires once for the
-      // very first (non-break) page. Updating data.settings.margin here
-      // is what makes autoTable actually use the new margin on the page
-      // it's about to continue rendering onto.
-      const extraPages = doc.getNumberOfPages() - pagesBeforeTable;
-      pageInInvoice = pageInInvoiceAtTableStart + extraPages;
-      const m = marginFor(pageInInvoice);
-      TOP = m.top;
-      BOTTOM = m.bottom;
-      data.settings.margin.top = TOP;
-      data.settings.margin.bottom = BOTTOM;
     },
   });
 
@@ -685,19 +602,77 @@ function drawInvoicePage(doc: jsPDF, inv: Invoice, scale = 1) {
     doc.text(val, totalsX + totalsW - 8, ry + 11, { align: "right" });
     if (i > 0) doc.line(totalsX, ry, totalsX + totalsW, ry);
   });
-  y += totalsRowH * totalLines.length + sc(18);
+  y += totalsRowH * totalLines.length + 18;
 
-  // ---- Wrapping writer with page-break + reserved footer space; each
-  // manual page break here also flips the margin (odd letterhead / even
-  // plain), same as the table above. -------------------------------------
+  // ---- GST/PAN + Signature + Certificate: treated as ONE indivisible tail
+  // block so an early page-break (e.g. mid-signature) can never separate the
+  // certificate onto a fresh, wasted letterhead sheet. Signature stays at a
+  // fixed size (per spec); only the gaps and certificate font/spacing flex.
+  const certIndent = 14;
+  const certWidth = W - M * 2 - certIndent;
+  const CERT_TIERS = [
+    { heading: 13, body: 10.5, lineH: 15, gapLines: 6 },
+    { heading: 12, body: 10, lineH: 14, gapLines: 5 },
+    { heading: 11, body: 9.5, lineH: 13, gapLines: 4 },
+    { heading: 10.5, body: 9, lineH: 12, gapLines: 3 },
+  ] as const;
+  const measureCertHeight = (tier: (typeof CERT_TIERS)[number]) => {
+    doc.setFont("helvetica", "normal").setFontSize(tier.body);
+    let h = tier.heading + 10;
+    for (const line of CERTIFICATE_LINES) {
+      const wrapped = doc.splitTextToSize(line, certWidth) as string[];
+      h += wrapped.length * tier.lineH;
+    }
+    return h;
+  };
+  const GST_PAN_H = 9.5 + 4 + 10; // one line + its trailing gap
+  const SIGNATURE_BLOCK_H = 50;
+
+  const currentPage = doc.getNumberOfPages();
+  let tier = CERT_TIERS[CERT_TIERS.length - 1]!;
+  let tailStartsNewPage = false;
+  let placed = false;
+  // Pass 1: prefer NOT breaking the page at all — try every tier, biggest
+  // to smallest, against the room left on the CURRENT page first.
+  for (const t of CERT_TIERS) {
+    const tailH = GST_PAN_H + SIGNATURE_BLOCK_H + t.gapLines * 9.5 + measureCertHeight(t);
+    if (y + tailH <= H - bottomFor(currentPage)) {
+      tier = t;
+      tailStartsNewPage = false;
+      placed = true;
+      break;
+    }
+  }
+  // Pass 2: only if nothing fit here, allow spilling onto the immediate next
+  // page — but only when that next page is the blank BACK of this sheet
+  // (even), never a fresh front page.
+  if (!placed) {
+    const nextPage = currentPage + 1;
+    if (nextPage % 2 === 0) {
+      for (const t of CERT_TIERS) {
+        const tailH = GST_PAN_H + SIGNATURE_BLOCK_H + t.gapLines * 9.5 + measureCertHeight(t);
+        if (tailH <= H - bottomFor(nextPage) - topFor(nextPage)) {
+          tier = t;
+          tailStartsNewPage = true;
+          placed = true;
+          break;
+        }
+      }
+    }
+  }
+  // Fallback: neither worked (rare) — use the smallest tier and let the
+  // normal ensureSpace() page-break flow handle it as a last resort.
+  if (tailStartsNewPage) {
+    doc.addPage();
+    y = topFor(doc.getNumberOfPages());
+  }
+
+  // ---- Wrapping writer with page-break + reserved footer space ---------
   const ensureSpace = (need: number) => {
-    if (y + need > H - BOTTOM) {
+    const page = doc.getNumberOfPages();
+    if (y + need > H - bottomFor(page)) {
       doc.addPage();
-      pageInInvoice++;
-      const m = marginFor(pageInInvoice);
-      TOP = m.top;
-      BOTTOM = m.bottom;
-      y = TOP;
+      y = topFor(doc.getNumberOfPages());
     }
   };
   const wrap = (text: string, size = 8.5, indent = 0, bold = false) => {
@@ -713,62 +688,45 @@ function drawInvoicePage(doc: jsPDF, inv: Invoice, scale = 1) {
     }
   };
 
-  wrap(`GST No: ${FIRM.gstin}      PAN No: ${FIRM.pan}`, Math.max(sc(9.5), 7.5));
-  y += sc(10);
+  wrap(`GST No: ${FIRM.gstin}      PAN No: ${FIRM.pan}`, 9.5);
+  y += 10;
 
-  // ---- Signature block comes right after totals — kept as one unit so it
-  // can never be orphaned onto its own page. Font size and spacing here
-  // are FIXED (not compressed) — this block should always read clearly. -
-  const SIG_SIZE = 12;
-  const SIGNATURE_BLOCK_H = 52;
+  // ---- Signature block: bottom-right, text centered within its own block —
+  // font size fixed at 12pt regardless of compression tier above. ---------
   ensureSpace(SIGNATURE_BLOCK_H);
+  const sigBlockW = 200;
+  const sigCenterX = W - M - sigBlockW / 2;
   doc
     .setFont("helvetica", "bold")
-    .setFontSize(SIG_SIZE)
+    .setFontSize(12)
     .setTextColor(...INK);
-  doc.text(`For ${FIRM.name}`, W - M, y, { align: "right" });
+  doc.text(`For ${FIRM.name}`, sigCenterX, y, { align: "center" });
   y += 30;
-  doc.setFont("helvetica", "normal").setFontSize(SIG_SIZE).setTextColor(0, 0, 0);
-  doc.text("Authorised Signatory", W - M, y, { align: "right" });
+  doc.setFont("helvetica", "normal").setFontSize(12).setTextColor(0, 0, 0);
+  doc.text("Authorised Signatory", sigCenterX, y, { align: "center" });
 
-  // ---- Gap, then the CERTIFICATE block below the signature. Its size is
-  // also FIXED — only the space above it (table) was compressed to make
-  // room, so the certificate never has to be shrunk or pushed to a 3rd
-  // (fresh-letterhead) page. -----------------------------------------------
-  y += sc(8.5 * 6);
+  // ---- 5-6 line gap, then the CERTIFICATE block below the signature -----
+  y += tier.gapLines * 9.5;
 
-  const CERT_HEAD_SIZE = 12;
-  const CERT_LINE_SIZE = 10;
-  const certBlockH = 26 + CERTIFICATE_LINES.length * 14;
-  if (y + Math.min(certBlockH, 160) > H - BOTTOM) {
-    doc.addPage();
-    pageInInvoice++;
-    const m = marginFor(pageInInvoice);
-    TOP = m.top;
-    BOTTOM = m.bottom;
-    y = TOP;
-  }
-
-  ensureSpace(18);
+  ensureSpace(16);
   doc.setFillColor(...ACCENT);
   doc.rect(M, y, W - 2 * M, 1.4, "F");
-  y += 16;
-  doc.setFontSize(CERT_HEAD_SIZE).setFont("helvetica", "bold").setTextColor(0, 0, 0);
+  y += 14;
+  doc.setFontSize(tier.heading).setFont("helvetica", "bold").setTextColor(0, 0, 0);
   doc.text("CERTIFICATE", W / 2, y, { align: "center" });
-  y += CERT_HEAD_SIZE + 6;
+  y += tier.heading + 6;
   const certLine = (num: number, text: string) => {
-    const indent = 16;
-    doc.setFontSize(CERT_LINE_SIZE).setFont("helvetica", "normal");
-    const lines = doc.splitTextToSize(text, W - M * 2 - indent) as string[];
+    doc.setFontSize(tier.body).setFont("helvetica", "normal");
+    const lines = doc.splitTextToSize(text, certWidth) as string[];
     lines.forEach((line, li) => {
-      ensureSpace(CERT_LINE_SIZE + 4);
+      ensureSpace(tier.lineH);
       if (li === 0) {
         doc.setFont("helvetica", "bold").setTextColor(0, 0, 0);
-        doc.text(`${num})`, M + indent / 2, y, { align: "center" });
+        doc.text(`${num})`, M + certIndent / 2, y, { align: "center" });
       }
       doc.setFont("helvetica", "normal").setTextColor(0, 0, 0);
-      doc.text(line, M + indent, y);
-      y += CERT_LINE_SIZE + 4;
+      doc.text(line, M + certIndent, y);
+      y += tier.lineH;
     });
   };
   CERTIFICATE_LINES.forEach((line, i) => certLine(i + 1, line));

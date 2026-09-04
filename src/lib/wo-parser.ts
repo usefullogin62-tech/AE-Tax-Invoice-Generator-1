@@ -64,6 +64,51 @@ const num = (s: string) => Number(String(s).replace(/,/g, "")) + 0 || 0;
 const ROW_RE =
   /^(\d{1,3})\s+(.+?)\s+(\d{3,8}\s*\|\s*\d+\s*\|\s*[\w-]+)\s+([A-Za-z][A-Za-z0-9./]{0,5})\s+(-?[\d,]+(?:\.\d+)?)\s+(-?[\d,]+(?:\.\d+)?)\s+(-?[\d,]+(?:\.\d+)?)\s*$/;
 
+/** Fallback for work-order layouts (e.g. substation PM work orders) whose
+ * Location column has no "code | code | name" delimiter — it's free text
+ * glued onto the description instead, so this only captures Sr/Unit/Qty/
+ * Rate/Amount and leaves description+location combined. */
+const SIMPLE_ROW_RE =
+  /^(\d{1,3})\s+(.+?)\s+([A-Za-z][A-Za-z0-9./]{0,5})\s+(-?[\d,]+(?:\.\d+)?)\s+(-?[\d,]+(?:\.\d+)?)\s+(-?[\d,]+(?:\.\d+)?)\s*$/;
+
+interface RowMatch {
+  sr: string;
+  desc: string;
+  loc: string;
+  unit: string;
+  qty: string;
+  rate: string;
+  amount: string;
+}
+
+function matchRow(t: string): RowMatch | null {
+  const full = t.match(ROW_RE);
+  if (full) {
+    return {
+      sr: full[1] ?? "0",
+      desc: full[2] ?? "",
+      loc: full[3] ?? "",
+      unit: full[4] ?? "",
+      qty: full[5] ?? "0",
+      rate: full[6] ?? "0",
+      amount: full[7] ?? "0",
+    };
+  }
+  const simple = t.match(SIMPLE_ROW_RE);
+  if (simple) {
+    return {
+      sr: simple[1] ?? "0",
+      desc: simple[2] ?? "",
+      loc: "",
+      unit: simple[3] ?? "",
+      qty: simple[4] ?? "0",
+      rate: simple[5] ?? "0",
+      amount: simple[6] ?? "0",
+    };
+  }
+  return null;
+}
+
 export function groupLines(chunks: PdfChunk[], page: number): Line[] {
   const sorted = [...chunks]
     .filter((c) => c.str.trim() !== "")
@@ -140,6 +185,8 @@ export function parseWorkOrder(pages: PdfChunk[][]): ParsedWorkOrder {
   let ratePct = 0;
   let rateAmount = 0;
   let pendingNumber: number | null = null;
+  let pendingRateAmount: number | null = null;
+  let pendingRateSign = 1;
 
   const finish = () => {
     current = null;
@@ -183,12 +230,28 @@ export function parseWorkOrder(pages: PdfChunk[][]): ParsedWorkOrder {
       pendingNumber = null;
       continue;
     }
+    // A row's numeric cells sometimes render on a slightly different visual
+    // line than its (wrapped) "Rate quoted by Agency ...% Above/Below" label
+    // — e.g. "Below -5.0 -1921.50" appearing just before the label line.
+    // Capture that amount so the label line below can pick it up.
+    const rateNumbers = t.match(/^(Above|Below)\s+(-?[\d,]+\.?\d*)\s+(-?[\d,]+\.\d+)\s*$/i);
+    if (rateNumbers) {
+      pendingRateAmount = num(rateNumbers[3] ?? "0");
+      pendingRateSign = /below/i.test(rateNumbers[1] ?? "") ? -1 : 1;
+      continue;
+    }
+
     const quoted = t.match(/Rate\s+quoted\s+by\s+Agency\s*(-?[\d.]+)\s*%/i);
     if (quoted) {
       finish();
       ratePct = num(quoted[1] ?? "0");
-      const nums = Array.from(t.matchAll(/(-?[\d,]+\.\d+)/g)).map((m) => num(m[1] ?? "0"));
-      rateAmount = nums.length ? (nums[nums.length - 1] ?? 0) : 0;
+      if (pendingRateAmount !== null) {
+        rateAmount = pendingRateSign < 0 ? -Math.abs(pendingRateAmount) : Math.abs(pendingRateAmount);
+      } else {
+        const nums = Array.from(t.matchAll(/(-?[\d,]+\.\d+)/g)).map((m) => num(m[1] ?? "0"));
+        rateAmount = nums.length ? (nums[nums.length - 1] ?? 0) : 0;
+      }
+      pendingRateAmount = null;
       bucket = null;
       continue;
     }
@@ -200,9 +263,9 @@ export function parseWorkOrder(pages: PdfChunk[][]): ParsedWorkOrder {
 
     if (!bucket) continue;
 
-    const row = t.match(ROW_RE);
+    const row = matchRow(t);
     if (row) {
-      const [, sr = "0", desc = "", loc = "", unit = "", qty = "0", rate = "0", amount = "0"] = row;
+      const { sr, desc, loc, unit, qty, rate, amount } = row;
       const item: WoLineItem = {
         id: `${bucket === materials ? "M" : "S"}-${sr}-${Math.random().toString(36).slice(2, 7)}`,
         srNo: Number(sr),
