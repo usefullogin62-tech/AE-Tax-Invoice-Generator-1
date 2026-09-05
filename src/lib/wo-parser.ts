@@ -58,7 +58,13 @@ interface Line {
   page: number;
 }
 
-const num = (s: string) => Number(String(s).replace(/,/g, "")) + 0 || 0;
+const num = (s: string) => {
+  const n = Number(String(s).replace(/,/g, ""));
+  return Number.isFinite(n) ? n : 0;
+};
+
+const JUNK_CONTINUATION =
+  /^(page\s+\d|work\s+order\s+no|material\s+supplied|services?\s+supplied|terms\s+and\s+conditions|total\s+(erp\s+)?amount|sr\.?\s*(no|no\.|number)?\b|executive\s+engineer|maharashtra\s+state)/i;
 
 /** Serial | description | location | unit | qty | rate | amount */
 const ROW_RE =
@@ -96,9 +102,11 @@ function matchRow(t: string): RowMatch | null {
   }
   const simple = t.match(SIMPLE_ROW_RE);
   if (simple) {
+    const desc = simple[2] ?? "";
+    if (/total|amount\s*\(rs|erp\s+amount|grand\s+total/i.test(desc)) return null;
     return {
       sr: simple[1] ?? "0",
-      desc: simple[2] ?? "",
+      desc,
       loc: "",
       unit: simple[3] ?? "",
       qty: simple[4] ?? "0",
@@ -267,7 +275,7 @@ export function parseWorkOrder(pages: PdfChunk[][]): ParsedWorkOrder {
     if (row) {
       const { sr, desc, loc, unit, qty, rate, amount } = row;
       const item: WoLineItem = {
-        id: `${bucket === materials ? "M" : "S"}-${sr}-${Math.random().toString(36).slice(2, 7)}`,
+        id: crypto.randomUUID(),
         srNo: Number(sr),
         description: desc.replace(/\s+/g, " ").trim(),
         location: loc.replace(/\s+/g, ""),
@@ -285,7 +293,7 @@ export function parseWorkOrder(pages: PdfChunk[][]): ParsedWorkOrder {
     // Wrapped continuation of the description cell.
     if (current) {
       const extra = descriptionFromChunks(line.chunks, boundaryX);
-      if (extra && !/^\d+$/.test(extra)) {
+      if (extra && !JUNK_CONTINUATION.test(extra) && !/^\d+$/.test(extra)) {
         current.description = `${current.description} ${extra}`.replace(/\s+/g, " ").trim();
       }
     }
@@ -342,20 +350,24 @@ export async function extractPdfChunks(data: ArrayBuffer): Promise<PdfChunk[][]>
   pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
   const doc = await pdfjs.getDocument({ data: new Uint8Array(data) }).promise;
-  const pages: PdfChunk[][] = [];
-  for (let i = 1; i <= doc.numPages; i++) {
-    const page = await doc.getPage(i);
-    const content = await page.getTextContent();
-    pages.push(
-      content.items
-        .filter((it): it is import("pdfjs-dist/types/src/display/api").TextItem => "str" in it)
-        .map((it) => ({
-          str: it.str,
-          x: it.transform[4] as number,
-          y: it.transform[5] as number,
-          w: it.width,
-        })),
-    );
+  try {
+    const pages: PdfChunk[][] = [];
+    for (let i = 1; i <= doc.numPages; i++) {
+      const page = await doc.getPage(i);
+      const content = await page.getTextContent();
+      pages.push(
+        content.items
+          .filter((it): it is import("pdfjs-dist/types/src/display/api").TextItem => "str" in it)
+          .map((it) => ({
+            str: it.str,
+            x: it.transform[4] as number,
+            y: it.transform[5] as number,
+            w: it.width,
+          })),
+      );
+    }
+    return pages;
+  } finally {
+    await doc.destroy();
   }
-  return pages;
 }

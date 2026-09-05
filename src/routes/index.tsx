@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import {
   AlertTriangle,
+  Bookmark,
   Copy,
   Download,
   FileSpreadsheet,
@@ -8,6 +9,7 @@ import {
   Loader2,
   Save,
   Search,
+  Sparkles,
   Trash2,
   Upload,
 } from "lucide-react";
@@ -35,8 +37,12 @@ import {
   deleteInvoice,
   duplicateInvoice,
   loadHistory,
+  loadOfficePreset,
   saveInvoice,
+  saveOfficePreset,
   searchHistory,
+  uniqueOfficesFromHistory,
+  type OfficePreset,
 } from "@/lib/invoice-history";
 import { extractPdfChunks, parseWorkOrder } from "@/lib/wo-parser";
 
@@ -97,13 +103,41 @@ function Index() {
   const [busy, setBusy] = useState(false);
   const [history, setHistory] = useState<Invoice[]>([]);
   const [query, setQuery] = useState("");
+  const [officePreset, setOfficePreset] = useState<OfficePreset | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => setHistory(loadHistory()), []);
+  useEffect(() => {
+    const list = loadHistory();
+    setHistory(list);
+    setOfficePreset(loadOfficePreset() ?? uniqueOfficesFromHistory(list, 1)[0] ?? null);
+  }, []);
 
   const invoice = invoices[activeIndex] ?? null;
   const totals = useMemo(() => (invoice ? computeTotals(invoice) : null), [invoice]);
   const filtered = useMemo(() => searchHistory(history, query), [history, query]);
+  const officePicks = useMemo(() => uniqueOfficesFromHistory(history), [history]);
+
+  const rememberOffice = (preset: OfficePreset) => {
+    const saved = saveOfficePreset(preset);
+    setOfficePreset(saved);
+    return saved;
+  };
+
+  const applyOffice = (preset: OfficePreset) => {
+    const saved = rememberOffice(preset);
+    setInvoices((cur) =>
+      cur.map((inv) => ({
+        ...inv,
+        section: saved.section,
+        subDivision: saved.subDivision,
+      })),
+    );
+    toast.success(
+      invoices.length > 1
+        ? `Section & sub division filled on all ${invoices.length} POs.`
+        : "Section & sub division auto-filled.",
+    );
+  };
   const mixedBatch = useMemo(() => {
     if (invoices.length < 2) return false;
     const sections = new Set(invoices.map((i) => i.section));
@@ -134,6 +168,7 @@ function Index() {
     });
 
   async function handleFiles(files: File[]) {
+    if (busy) return;
     if (invoices.length >= MAX_BULK) {
       toast.error(`You can batch a maximum of ${MAX_BULK} POs at a time.`);
       return;
@@ -236,28 +271,33 @@ function Index() {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap gap-1.5">
                 {invoices.map((inv, i) => (
-                  <button
+                  <div
                     key={inv.id}
-                    onClick={() => setActiveIndex(i)}
-                    className={`rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
+                    className={`flex items-center rounded-md border text-xs font-medium ${
                       i === activeIndex
                         ? "border-primary bg-primary/10 text-primary"
-                        : "border-border text-muted-foreground hover:bg-muted"
+                        : "border-border text-muted-foreground"
                     }`}
                   >
-                    PO {i + 1} · {inv.reBillNo || inv.workOrderNo || "untitled"}
-                    <span
-                      role="button"
-                      className="ml-2 text-muted-foreground/70 hover:text-destructive"
-                      onClick={(e) => {
-                        e.stopPropagation();
+                    <button
+                      type="button"
+                      onClick={() => setActiveIndex(i)}
+                      className="rounded-l-md px-3 py-1.5 hover:bg-muted/60"
+                    >
+                      PO {i + 1} · {inv.reBillNo || inv.workOrderNo || "untitled"}
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Remove PO ${i + 1}`}
+                      className="rounded-r-md px-1.5 py-1.5 text-muted-foreground/70 hover:text-destructive"
+                      onClick={() => {
                         setInvoices((cur) => cur.filter((_, idx) => idx !== i));
                         setActiveIndex((cur) => Math.max(0, cur >= i ? cur - 1 : cur));
                       }}
                     >
                       ✕
-                    </span>
-                  </button>
+                    </button>
+                  </div>
                 ))}
               </div>
               <div className="flex flex-wrap gap-2">
@@ -335,6 +375,65 @@ function Index() {
                   value={invoice.loeDate}
                   onChange={(v) => patch({ loeDate: v })}
                 />
+                <div className="sm:col-span-2 lg:col-span-4 space-y-2 rounded-lg border border-dashed border-primary/30 bg-primary/5 p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={!officePreset}
+                      onClick={() => officePreset && applyOffice(officePreset)}
+                    >
+                      <Sparkles className="size-3.5" /> Auto-fill section &amp; sub division
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={!invoice.section.trim() && !invoice.subDivision.trim()}
+                      onClick={() => {
+                        rememberOffice({
+                          section: invoice.section,
+                          subDivision: invoice.subDivision,
+                        });
+                        toast.success("Saved. Next time just tap Auto-fill.");
+                      }}
+                    >
+                      <Bookmark className="size-3.5" /> Remember these
+                    </Button>
+                    {officePreset ? (
+                      <p className="text-xs text-muted-foreground">
+                        Ready: {officePreset.section || "—"} · {officePreset.subDivision || "—"}
+                      </p>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        Type them once, tap Remember, then Auto-fill on every new PO.
+                      </p>
+                    )}
+                  </div>
+                  {officePicks.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {officePicks.map((pick) => {
+                        const active =
+                          officePreset?.section === pick.section &&
+                          officePreset.subDivision === pick.subDivision;
+                        return (
+                          <button
+                            key={`${pick.section}|${pick.subDivision}`}
+                            type="button"
+                            onClick={() => applyOffice(pick)}
+                            className={`rounded-full border px-2.5 py-1 text-xs ${
+                              active
+                                ? "border-primary bg-primary/10 text-primary"
+                                : "border-border bg-card text-muted-foreground hover:bg-muted"
+                            }`}
+                          >
+                            {pick.section || "—"} · {pick.subDivision || "—"}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
                 <Field
                   label="Section"
                   value={invoice.section}
@@ -426,7 +525,10 @@ function Index() {
                   value={invoice.insuranceAmount}
                 />
                 <Row label="Service total" value={totals.serviceTotal} />
-                <Row label={`Rate quoted ${invoice.ratePct}% Above`} value={invoice.rateAmount} />
+                <Row
+                  label={`Rate quoted ${Math.abs(invoice.ratePct)}% ${invoice.ratePct < 0 ? "Below" : "Above"}`}
+                  value={invoice.rateAmount}
+                />
                 <Separator />
                 <Row label="TOTAL (Excl. Taxes)" value={totals.totalExclusive} bold />
                 <Row label="G.S.T 18% (inclusive − exclusive)" value={totals.gst} bold />
@@ -449,6 +551,12 @@ function Index() {
                     variant="outline"
                     onClick={() => {
                       setHistory(saveInvoice(invoice));
+                      if (invoice.section.trim() || invoice.subDivision.trim()) {
+                        rememberOffice({
+                          section: invoice.section,
+                          subDivision: invoice.subDivision,
+                        });
+                      }
                       toast.success("Invoice saved to history.");
                     }}
                   >

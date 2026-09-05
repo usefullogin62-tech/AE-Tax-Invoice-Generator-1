@@ -82,6 +82,7 @@ export function InvoiceItemsTable({ title, items, onChange }: Props) {
                 <td className="px-1 py-1">
                   <Input
                     type="number"
+                    step="any"
                     className="h-8 border-transparent bg-transparent text-right hover:border-input focus-visible:border-input"
                     value={item.qty}
                     onChange={(e) => update(item.id, { qty: Number(e.target.value) })}
@@ -90,6 +91,7 @@ export function InvoiceItemsTable({ title, items, onChange }: Props) {
                 <td className="px-1 py-1">
                   <Input
                     type="number"
+                    step="any"
                     className="h-8 border-transparent bg-transparent text-right hover:border-input focus-visible:border-input"
                     value={item.rate}
                     onChange={(e) => update(item.id, { rate: Number(e.target.value) })}

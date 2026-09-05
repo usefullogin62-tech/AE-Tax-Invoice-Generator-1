@@ -14,7 +14,11 @@ export function loadHistory(): Invoice[] {
 }
 
 function persist(list: Invoice[]) {
-  window.localStorage.setItem(KEY, JSON.stringify(list));
+  try {
+    window.localStorage.setItem(KEY, JSON.stringify(list));
+  } catch {
+    // Quota or private-mode storage — keep working in memory for this session.
+  }
 }
 
 export function saveInvoice(inv: Invoice): Invoice[] {
@@ -46,6 +50,58 @@ export function duplicateInvoice(id: string): Invoice[] {
   list.unshift(copy);
   persist(list);
   return list;
+}
+
+export type OfficePreset = {
+  section: string;
+  subDivision: string;
+};
+
+const OFFICE_KEY = "aditya-office-defaults-v1";
+
+export function loadOfficePreset(): OfficePreset | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(OFFICE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<OfficePreset>;
+    const section = String(parsed.section ?? "").trim();
+    const subDivision = String(parsed.subDivision ?? "").trim();
+    if (!section && !subDivision) return null;
+    return { section, subDivision };
+  } catch {
+    return null;
+  }
+}
+
+export function saveOfficePreset(preset: OfficePreset): OfficePreset {
+  const next = {
+    section: preset.section.trim(),
+    subDivision: preset.subDivision.trim(),
+  };
+  try {
+    window.localStorage.setItem(OFFICE_KEY, JSON.stringify(next));
+  } catch {
+    // Quota or private-mode storage — still return the in-memory preset.
+  }
+  return next;
+}
+
+/** Unique section + sub-division pairs from newest saved invoices first. */
+export function uniqueOfficesFromHistory(list: Invoice[], limit = 6): OfficePreset[] {
+  const seen = new Set<string>();
+  const out: OfficePreset[] = [];
+  for (const inv of list) {
+    const section = (inv.section ?? "").trim();
+    const subDivision = (inv.subDivision ?? "").trim();
+    if (!section && !subDivision) continue;
+    const key = `${section.toLowerCase()}|${subDivision.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ section, subDivision });
+    if (out.length >= limit) break;
+  }
+  return out;
 }
 
 export function searchHistory(list: Invoice[], q: string): Invoice[] {

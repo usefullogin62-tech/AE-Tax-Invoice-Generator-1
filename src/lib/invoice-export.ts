@@ -442,7 +442,12 @@ export function exportPdf(inv: Invoice) {
 export function exportPdfBulk(invoices: Invoice[]) {
   const doc = new jsPDF({ unit: "pt", format: "a4" });
   invoices.forEach((inv, i) => {
-    if (i > 0) doc.addPage();
+    if (i > 0) {
+      // Each invoice must start on a letterhead FRONT (odd page). If the
+      // previous invoice ended on an odd page, add a blank back first.
+      if (doc.getNumberOfPages() % 2 === 1) doc.addPage();
+      doc.addPage();
+    }
     renderInvoiceBestEffort(doc, inv);
   });
   const first = invoices[0];

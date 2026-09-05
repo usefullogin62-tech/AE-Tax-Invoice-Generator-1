@@ -13,7 +13,7 @@ export const CERTIFICATE_LINES = [
   "This Invoice is not recorded previously.",
   "Service Location and services are not repeated and recorded at the first time.",
   "Work Completion report for period of work carried out is attached.",
-  "Bill is recoded for passing",
+  "Bill is recorded for passing",
 ];
 
 /** "54" -> "55", "RE-054" -> "RE-055". Falls back to the input unchanged if
